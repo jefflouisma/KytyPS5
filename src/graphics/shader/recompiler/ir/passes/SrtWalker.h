@@ -11,6 +11,7 @@ namespace Libs::Graphics::ShaderRecompiler::IR {
 class Value;
 
 using SrtMemoryReader = bool (*)(void* userdata, uint64_t address, std::span<uint32_t> values);
+using SrtProtectedReader = bool (*)(uint64_t address, std::span<uint32_t> values);
 
 struct SrtRuntime {
 	std::span<const uint32_t> user_data;
@@ -20,7 +21,14 @@ struct SrtRuntime {
 	SrtMemoryReader           read_specialization_memory = nullptr;
 	std::span<const uint32_t> workgroup_counts;
 	uint64_t                  indirect_args_address = 0;
+	// Reads the DWORDs of a direct load that faulted on a protected page, waiting only for GPU
+	// writes that may change them. Without it, or when it fails, the load faults as usual.
+	SrtProtectedReader read_protected = nullptr;
 };
+
+// Host fault handler, read faults: a guest load of compiled SRT code running on this thread
+// resumes at `resume`, where the code fails and the walker reads the DWORD again.
+bool ResumeSrtLoadFault(uint64_t pc, uint64_t& resume) noexcept;
 
 class SrtReadCapture {
 public:
