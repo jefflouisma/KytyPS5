@@ -863,7 +863,7 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 							if (arg.IsImmediate()) extra += " imm" + std::to_string(a) + "=" + std::to_string(arg.U64());
 						}
 						std::fprintf(stderr, "GETPC %*s%s (operand %zu)%s\n", depth * 2, "",
-						             IR::ValueOpcodeName(use.user->GetOpcode()), use.operand, extra.c_str());
+						             std::string(IR::ValueOpcodeName(use.user->GetOpcode())).c_str(), use.operand, extra.c_str());
 						if (depth < 6) dump(*use.user, depth + 1);
 					}
 				};
