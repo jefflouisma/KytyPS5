@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "graphics/host_gpu/ps5plusCheckpoints.h"
 #include "common/common.h"
 #include "common/emulatorConfig.h"
 #include "common/file.h"
@@ -1147,6 +1148,10 @@ void WindowContext::CreateVulkan() {
 			device_extensions.push_back(VK_EXT_ATTACHMENT_FEEDBACK_LOOP_DYNAMIC_STATE_EXTENSION_NAME);
 		}
 		Vr::OpenXrAppendExtensions(device_extensions, available_extensions, true);
+		if (Ps5PlusCheckpoints::Requested() &&
+		    HasExtension(available_extensions, VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME)) {
+			device_extensions.push_back(VK_NV_DEVICE_DIAGNOSTIC_CHECKPOINTS_EXTENSION_NAME);
+		}
 	}
 
 	graphic_ctx.device = VulkanCreateDevice(graphic_ctx, device_extensions);
@@ -1162,6 +1167,16 @@ void WindowContext::CreateVulkan() {
 	}
 	graphic_ctx.device.getQueue(graphic_ctx.queue_family, 0, &graphic_ctx.queue);
 	EXIT_IF(graphic_ctx.queue == nullptr);
+	if (Ps5PlusCheckpoints::Requested()) {
+		const auto get = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetDeviceProcAddr;
+		Ps5PlusCheckpoints::g_cmd_set = reinterpret_cast<PFN_vkCmdSetCheckpointNV>(
+		    get(graphic_ctx.device, "vkCmdSetCheckpointNV"));
+		Ps5PlusCheckpoints::g_get_data = reinterpret_cast<PFN_vkGetQueueCheckpointDataNV>(
+		    get(graphic_ctx.device, "vkGetQueueCheckpointDataNV"));
+		Ps5PlusCheckpoints::g_queue = graphic_ctx.queue;
+		std::fprintf(stderr, "PS5PLUS GPU checkpoints %s\n",
+		             Ps5PlusCheckpoints::g_cmd_set != nullptr ? "enabled" : "unavailable");
+	}
 
 	if (!graphic_ctx.CreateAllocator()) {
 		EXIT("Could not create Vulkan memory allocator");

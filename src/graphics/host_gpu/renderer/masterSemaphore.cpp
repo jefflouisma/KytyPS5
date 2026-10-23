@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/masterSemaphore.h"
+#include "graphics/host_gpu/ps5plusCheckpoints.h"
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
@@ -53,6 +54,9 @@ void MasterSemaphore::Wait(uint64_t tick) {
 	Common::DebugCounters::ScopedTimer timer(Common::DebugCounters::Counter::GpuWaits,
 	                                         Common::DebugCounters::Counter::GpuWaitNs);
 	const auto result = m_graphics.device.waitSemaphores(&wait_info, UINT64_MAX);
+	if (result != vk::Result::eSuccess) {
+		Ps5PlusCheckpoints::Dump("waitSemaphores");
+	}
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess);
 	Refresh();
 }
