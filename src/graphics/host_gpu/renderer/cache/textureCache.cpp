@@ -976,14 +976,25 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 	}
 	// Dynamic resolution renders one allocation at several extents with the same layout
 	// (PPSA08332 switches between up to five every frame). Keep the image of each extent:
-	// replacing it re-uploads stale guest memory over the GPU-rendered contents.
-	const bool resolution_sibling =
-	    requested.data.address == cached.info.data.address && requested.type == cached.info.type &&
-	    requested.tile_mode == cached.info.tile_mode &&
-	    requested.pixel_format == cached.info.pixel_format &&
-	    requested.samples == cached.info.samples && requested.resources == cached.info.resources;
+	// replacing it re-uploads stale guest memory over the GPU-rendered contents. The garbage
+	// collector keeps GPU-written tiled images, so bound the idle extents kept per allocation.
+	const auto same_layout = [&](const ImageInfo& info) {
+		return info.data.address == cached.info.data.address && info.type == cached.info.type &&
+		       info.tile_mode == cached.info.tile_mode &&
+		       info.pixel_format == cached.info.pixel_format && info.samples == cached.info.samples &&
+		       info.resources == cached.info.resources;
+	};
+	const auto siblings = [&] {
+		size_t count = 0;
+		for (const auto id: FindImagesInRegion(cached.info.data.address, cached.info.data.size, false)) {
+			const auto* image = m_slot_images.try_get(id);
+			count += image != nullptr && image->registered && same_layout(image->info) ? 1u : 0u;
+		}
+		return count;
+	};
+	constexpr size_t MaxResolutionSiblings = 4;
 	if (requested.data.address >= cached.info.data.address && safe_to_delete &&
-	    !resolution_sibling) {
+	    (!same_layout(requested) || siblings() > MaxResolutionSiblings)) {
 		FreeImage(cached_id);
 	}
 	return {merged_id};
