@@ -1,3 +1,4 @@
+#include <cstdlib>
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/shader/recompiler/frontend/translate/Translator.h"
@@ -921,7 +922,7 @@ void Translator::DS_ORDERED_COUNT(const Decoder::Instruction& inst) {
 	                                   {ReadU32(inst.src0), is_first}));
 	const auto value = ir.Select(active, source, IR::U32(IR::Value(0u)));
 	const auto flags = AddMemoryInfo(memory, inst.pc);
-	const bool ordered  = program.info.uses_ordered_append;
+	const bool ordered  = program.info.uses_ordered_append && std::getenv("PS5PLUS_NO_ORDERED_WAIT") == nullptr;
 	if (ordered) {
 		// Wait on the full dispatch-order rank: M0 only keeps its low 11 bits, which repeat
 		// every 2048 waves while Vulkan may run such waves concurrently.
