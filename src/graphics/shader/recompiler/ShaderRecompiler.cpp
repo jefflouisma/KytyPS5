@@ -741,6 +741,34 @@ TranslateResult TranslateProgram(std::span<const uint32_t> code, const CompileOp
 	return TranslateProgram(source.decoded, options);
 }
 
+// True when every value derived from a shader base only forms the base address of a buffer
+// resource: 64-bit address arithmetic, including the split carry, ending in descriptor words 0-1.
+static bool OnlyAddressesBufferResources(const IR::Inst& inst, uint32_t depth = 0) {
+	if (depth > 16) {
+		return false;
+	}
+	for (const auto& use: inst.Uses()) {
+		switch (use.user->GetOpcode()) {
+			case IR::ValueOpcode::GetBufferResource:
+				if (use.operand > 1) {
+					return false;
+				}
+				break;
+			case IR::ValueOpcode::IAdd64:
+			case IR::ValueOpcode::IAdd32:
+			case IR::ValueOpcode::CompositeExtractU64:
+			case IR::ValueOpcode::ULessThan32:
+			case IR::ValueOpcode::SelectU32:
+				if (!OnlyAddressesBufferResources(*use.user, depth + 1)) {
+					return false;
+				}
+				break;
+			default: return false;
+		}
+	}
+	return true;
+}
+
 TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileOptions& options) {
 	EXIT_IF(decoded.instructions.empty());
 	if (decoded.has_swap_pc) {
@@ -850,9 +878,11 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	simplify();
 	if (decoded.has_swap_pc) {
 		// Leaf returns are resolved CFG edges; native PC values must not escape into GPU data.
+		// A PC-relative descriptor base is resolved on the host, as without calls (PPSA08332).
 		for (const auto* block: ir.blocks)
 			for (const auto& inst: *block)
-				EXIT_NOT_IMPLEMENTED(inst.GetOpcode() == IR::ValueOpcode::GetShaderBase);
+				EXIT_NOT_IMPLEMENTED(inst.GetOpcode() == IR::ValueOpcode::GetShaderBase &&
+				                     !OnlyAddressesBufferResources(inst));
 	}
 	LowerTessellationMemory(ir, options);
 	std::string cfg_dump;
