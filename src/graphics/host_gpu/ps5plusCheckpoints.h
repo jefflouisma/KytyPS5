@@ -54,6 +54,10 @@ inline bool SkipPixelShader(uint64_t hash) {
 	return false;
 }
 
+inline bool EnvFlag(const char* name) {
+	return std::getenv(name) != nullptr;
+}
+
 inline bool Requested() {
 	return std::getenv("PS5PLUS_GPU_CHECKPOINTS") != nullptr;
 }
@@ -117,7 +121,8 @@ inline void Dump(const char* where) {
 		std::fprintf(stderr, "PS5PLUS GPU   args #%u: %08x %08x %08x %08x %08x\n", n, words[0], words[1],
 		             words[2], words[3], words[4]);
 	};
-	for (uint32_t n = low >= 8u ? low - 8u : 0u; low != UINT32_MAX && n <= low; n++) {
+	for (uint32_t n = low > 32u ? low - 32u : 1u; low != UINT32_MAX && n <= low; n++) {
+		std::fprintf(stderr, "PS5PLUS GPU BEFORE %s\n", g_labels[(n - 1u) % g_labels.size()].data());
 		capture(n);
 	}
 	if (low != UINT32_MAX && high > low && high - low <= 256u) {
