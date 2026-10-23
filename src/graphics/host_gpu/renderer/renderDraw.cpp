@@ -1432,7 +1432,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const uint64_t ind = emit.indirect.address;
 		const uint32_t width = rendering.width;
 		const uint32_t height = rendering.height;
-		m_context.GetCommandScheduler().DeferOperation([draw_timer, draw_query, vs, ps, idx, ind, width, height] {
+		std::string resources;
+		if (vs == 0xa8869a3f870a8932ull || vs == 0x80ea8f6bc896aa41ull) {
+			const auto& vb = bindings.vertex[0];
+			for (const auto& b: vb.buffer_sources) {
+				resources += fmt::format(" b{:x}:{:x}", b.address, b.size);
+			}
+			for (const auto& t: vb.images) {
+				resources += fmt::format(" t{}:{:x}:{}x{}", t.image_id ? 1 : 0, t.desc.info.data.address,
+				                         t.desc.info.extent.width, t.desc.info.extent.height);
+			}
+		}
+		m_context.GetCommandScheduler().DeferOperation([draw_timer, draw_query, vs, ps, idx, ind, width, height,
+		                                                resources = std::move(resources)] {
 			uint64_t ticks[2] {};
 			const auto result = draw_timer->device.getQueryPoolResults(draw_timer->pool, draw_query, 2, sizeof(ticks), ticks,
 			                                                         sizeof(uint64_t), vk::QueryResultFlagBits::e64);
@@ -1445,6 +1457,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 				return;
 			}
 			const double ms = static_cast<double>(ticks[1] - ticks[0]) * draw_timer->period / 1.0e6;
+			static uint32_t normal_reports = 0;
+			const bool report_normal = !resources.empty() && counts[4] < 20000000u && ms < 5.0 && (normal_reports++ % 500u) == 0u;
+			if (report_normal || (!resources.empty() && counts[4] > 500000000u && draw_timer->slow < 2000u)) {
+				std::fprintf(stderr, "PS5PLUS PARTICLE %s %.1f ms fs=%llu clip=%llu ind=%llx vs=%016llx ps=%016llx res:%s\n",
+				             report_normal ? "normal" : "HUGE", ms, static_cast<unsigned long long>(counts[4]),
+				             static_cast<unsigned long long>(counts[3]), static_cast<unsigned long long>(ind),
+				             static_cast<unsigned long long>(vs), static_cast<unsigned long long>(ps), resources.c_str());
+			}
 			if (ms >= 20.0 && draw_timer->slow++ < 2000u) {
 				std::fprintf(stderr,
 				             "PS5PLUS SLOWDRAW %.1f ms idx=%u ind=%llx rt=%ux%u vs=%016llx ps=%016llx ia_v=%llu ia_p=%llu vs_inv=%llu clip_p=%llu fs_inv=%llu%s\n",
