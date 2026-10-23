@@ -1,3 +1,5 @@
+#include <cstdio>
+#include <chrono>
 #include "graphics/presentation/videoOut.h"
 
 #include "common/abi.h"
@@ -1654,6 +1656,21 @@ KYTY_SYSV_ABI int VideoOutUnregisterBuffers(int handle, int set_index) {
 	return OK;
 }
 
+
+// PS5Plus temporary diagnostics: flip submissions and completions.
+std::atomic<uint64_t> g_ps5plus_flips[4] {};
+void Ps5PlusNoteFlip(int kind, int result) {
+	static std::atomic<int64_t> last {0};
+	g_ps5plus_flips[kind & 3].fetch_add(1);
+	const int64_t now = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+	int64_t prev = last.load();
+	if (now - prev >= 2 && last.compare_exchange_strong(prev, now)) {
+		std::fprintf(stderr, "FLIPS total cpu_submit=%llu gpu_submit=%llu complete=%llu rejected=%llu (last result=%d)\n",
+		    (unsigned long long)g_ps5plus_flips[0].load(), (unsigned long long)g_ps5plus_flips[1].load(),
+		    (unsigned long long)g_ps5plus_flips[2].load(), (unsigned long long)g_ps5plus_flips[3].load(), result);
+		std::fflush(stderr);
+	}
+}
 KYTY_SYSV_ABI int VideoOutSubmitFlip(int handle, int index, int flip_mode, int64_t flip_arg) {
 	PRINT_NAME();
 
@@ -1663,6 +1680,7 @@ KYTY_SYSV_ABI int VideoOutSubmitFlip(int handle, int index, int flip_mode, int64
 	if (result == VIDEO_OUT_ERROR_INVALID_FLIP_MODE) {
 		LOGF("\t unsupported flip_mode = %d\n", flip_mode);
 	}
+	Ps5PlusNoteFlip(result == OK ? 0 : 3, result);
 	if (result != OK) {
 		return result;
 	}
@@ -1677,6 +1695,7 @@ int VideoOutDriver::SubmitFlipFromGpu(Graphics::CommandBuffer& buffer, int handl
 
 	const int result = ReserveFlipRequest(*m_impl, handle, index, flip_mode, flip_arg,
 	                                      FlipRequestSource::GpuEop, request_id);
+	Ps5PlusNoteFlip(result == OK ? 1 : 3, result);
 	if (result != OK) {
 		return result;
 	}
@@ -1694,6 +1713,7 @@ void VideoOutDriver::PrepareFlip(uint64_t request_id, Graphics::CommandBuffer& b
 }
 
 void VideoOutDriver::CompleteFlip(uint64_t request_id) {
+	Ps5PlusNoteFlip(2, 0);
 	m_impl->GetFlipQueue().Complete(request_id);
 }
 
