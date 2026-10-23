@@ -75,10 +75,14 @@ static void CopySparseRange(const Regions& regions, uint64_t vaddr, void* data, 
 class GuestWriteProtection {
 public:
 	GuestWriteProtection() {
+		if (std::getenv("PS5PLUS_NO_UFFD") != nullptr) {
+			std::fprintf(stderr, "PS5PLUS guest write tracking: mprotect (PS5PLUS_NO_UFFD)\n");
+			return;
+		}
 		const int fd = static_cast<int>(
 		    syscall(SYS_userfaultfd, O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY));
 		if (fd < 0) {
-			LOGF("\t guest write tracking: mprotect (userfaultfd unavailable: %d)\n", errno);
+			std::fprintf(stderr, "PS5PLUS guest write tracking: mprotect (userfaultfd unavailable: %d)\n", errno);
 			return;
 		}
 		uffdio_api api {};
@@ -93,7 +97,7 @@ public:
 			return;
 		}
 		m_fd = fd;
-		LOGF("\t guest write tracking: userfaultfd write protection\n");
+		std::fprintf(stderr, "PS5PLUS guest write tracking: userfaultfd write protection\n");
 	}
 
 	~GuestWriteProtection() {
