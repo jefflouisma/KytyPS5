@@ -50,6 +50,7 @@ private:
 
 class CommandProcessor {
 public:
+	CommandBuffer& Ps5PlusCurrentBuffer() { return GetScheduler().Current(); }
 	struct FlipInfo {
 		int     handle    = 0;
 		int     index     = 0;
