@@ -860,7 +860,14 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 						std::string extra;
 						for (size_t a = 0; a < use.user->NumArgs(); a++) {
 							const auto arg = use.user->Arg(a);
-							if (arg.IsImmediate()) extra += " imm" + std::to_string(a) + "=" + std::to_string(arg.U64());
+							if (arg.IsImmediate()) {
+								const auto t = arg.GetType();
+								extra += " imm" + std::to_string(a) + "=" +
+								         (t == IR::Type::U64 ? std::to_string(arg.U64())
+								          : t == IR::Type::U32 ? std::to_string(arg.U32()) : std::string("?"));
+							} else if (!arg.IsEmpty() && arg.TryInstruction() != nullptr) {
+								extra += " arg" + std::to_string(a) + "=" + std::string(IR::ValueOpcodeName(arg.TryInstruction()->GetOpcode()));
+							}
 						}
 						std::fprintf(stderr, "GETPC %*s%s (operand %zu)%s\n", depth * 2, "",
 						             std::string(IR::ValueOpcodeName(use.user->GetOpcode())).c_str(), use.operand, extra.c_str());
