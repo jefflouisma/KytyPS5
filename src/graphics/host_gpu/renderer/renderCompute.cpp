@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "graphics/host_gpu/ps5plusCheckpoints.h"
 #include "common/common.h"
 #include "common/debugCounters.h"
 #include "common/emulatorConfig.h"
@@ -276,6 +277,7 @@ void RenderExecutor::DispatchDirect(uint64_t submit_id, CommandBuffer& buffer,
 	auto& sh_ctx = buffer.GetShaders();
 	ResolvePendingMetaClears(buffer);
 
+	Ps5PlusCheckpoints::Mark(buffer.Handle(), "CS direct cs=0x%llx", static_cast<unsigned long long>(buffer.GetShaders().GetCs().cs_regs.data_addr));
 	buffer.SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DispatchDirect), submit_id,
 	                    thread_group_x, thread_group_y, thread_group_z, mode,
 	                    sh_ctx.GetCs().cs_regs.data_addr);
@@ -544,6 +546,7 @@ void RenderExecutor::DispatchIndirect(uint64_t submit_id, CommandBuffer& buffer,
 	EXIT_IF(buffer.IsInvalid() || args_addr == 0 || (args_addr & 3u) != 0 ||
 	        (mode & Pm4::COMPUTE_DISPATCH_INITIATOR_USE_THREAD_DIMENSIONS) != 0);
 	m_context.GetCommandScheduler().PopPendingOperations();
+	Ps5PlusCheckpoints::Mark(buffer.Handle(), "CS indirect cs=0x%llx", static_cast<unsigned long long>(buffer.GetShaders().GetCs().cs_regs.data_addr));
 	buffer.SetDebugInfo(static_cast<uint32_t>(CommandBufferDebugOp::DispatchIndirect), submit_id,
 	                    static_cast<uint32_t>(args_addr), static_cast<uint32_t>(args_addr >> 32u),
 	                    0, mode, buffer.GetShaders().GetCs().cs_regs.data_addr);

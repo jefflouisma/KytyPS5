@@ -1,4 +1,5 @@
 #include "graphics/presentation/systemOverlay.h"
+#include "graphics/host_gpu/ps5plusCheckpoints.h"
 
 #include "common/assert.h"
 #include "common/emulatorConfig.h"
@@ -627,6 +628,9 @@ PFN_vkVoidFunction LoadVulkanFunction(const char* name, void* user_data) {
 }
 
 void CheckVulkanResult(VkResult result) {
+	if (result != VK_SUCCESS) {
+		Libs::Graphics::Ps5PlusCheckpoints::Dump("overlay");
+	}
 	EXIT_IF(result != VK_SUCCESS);
 }
 
