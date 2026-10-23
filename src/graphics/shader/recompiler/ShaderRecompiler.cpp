@@ -1,3 +1,5 @@
+#include <cstdlib>
+#include <cstdio>
 #include "graphics/shader/recompiler/ShaderRecompiler.h"
 
 #include "common/assert.h"
@@ -892,6 +894,13 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 			LOGF("%s native IR before resource tracking:\n%s", GetDumpLabel(options),
 			     MakeIrDump(cfg_dump, ir).c_str());
 		}
+	}
+	if (const char* want = std::getenv("PS5PLUS_DUMP_HASH");
+	    want != nullptr && std::strtoull(want, nullptr, 16) == options.shader_hash) {
+		const auto dump = MakeIrDump(CFG::GraphToString(cfg), ir);
+		std::fprintf(stderr, "PS5PLUS_IR_BEGIN hash=0x%016llx\n%s\nPS5PLUS_IR_END\n",
+		             static_cast<unsigned long long>(options.shader_hash), dump.c_str());
+		std::fflush(stderr);
 	}
 	IR::TrackResources(ir, decoded, native_cfg, options.input_info);
 	TranslateResult result;
