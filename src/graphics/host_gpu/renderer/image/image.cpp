@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/image/image.h"
+#include "graphics/host_gpu/ps5plusCheckpoints.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -273,6 +274,7 @@ void Image::Upload(std::span<const vk::BufferImageCopy> copies, vk::Buffer buffe
 	dependency.pImageMemoryBarriers     = image_barriers.data();
 	auto command                        = m_scheduler.Current().Handle();
 	command.pipelineBarrier2(dependency);
+	Ps5PlusCheckpoints::Mark(command, "image copyBufferToImage site=1 %ux%u", info.extent.width, info.extent.height);
 	command.copyBufferToImage(buffer, backing.image, vk::ImageLayout::eTransferDstOptimal,
 	                          static_cast<uint32_t>(copies.size()), copies.data());
 	buffer_barrier.srcStageMask  = vk::PipelineStageFlagBits2::eTransfer;
@@ -313,6 +315,7 @@ void Image::Download(std::span<const vk::BufferImageCopy> copies, vk::Buffer buf
 	dependency.pImageMemoryBarriers     = image_barriers.data();
 	auto command                        = m_scheduler.Current().Handle();
 	command.pipelineBarrier2(dependency);
+	Ps5PlusCheckpoints::Mark(command, "image copyImageToBuffer site=2 %ux%u", info.extent.width, info.extent.height);
 	command.copyImageToBuffer(backing.image, vk::ImageLayout::eTransferSrcOptimal, buffer,
 	                          static_cast<uint32_t>(copies.size()), copies.data());
 	buffer_barrier.srcStageMask  = vk::PipelineStageFlagBits2::eCopy;
@@ -398,6 +401,7 @@ void Image::CopyImage(Image& source) {
 	source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
 	               command);
 	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command);
+	Ps5PlusCheckpoints::Mark(command, "image copyImage site=3 %ux%u", info.extent.width, info.extent.height);
 	command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, backing.image,
 	                  vk::ImageLayout::eTransferDstOptimal, static_cast<uint32_t>(copies.size()),
 	                  copies.data());
@@ -449,6 +453,7 @@ void Image::Resolve(Image& source, const ImageSubresourceRange& source_range,
 		                         resolved_destination_range.base_level,
 		                         resolved_destination_range.base_layer, layers};
 		region.extent         = resolve_extent;
+		Ps5PlusCheckpoints::Mark(command, "image copyImage site=4 %ux%u", info.extent.width, info.extent.height);
 		command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, backing.image,
 		                  vk::ImageLayout::eTransferDstOptimal, region);
 	} else {
@@ -549,6 +554,7 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 				barrier.srcAccessMask = vk::AccessFlagBits2::eTransferRead;
 				barrier.dstAccessMask = vk::AccessFlagBits2::eTransferWrite;
 				command.pipelineBarrier2(dependency);
+				Ps5PlusCheckpoints::Mark(command, "image copyImageToBuffer site=5 %ux%u", info.extent.width, info.extent.height);
 				command.copyImageToBuffer(source.backing.image,
 				                          vk::ImageLayout::eTransferSrcOptimal, buffer.Handle(),
 				                          source_copy);
@@ -565,6 +571,7 @@ void Image::CopyImageWithBuffer(Image& source, Buffer& buffer, TileManager& tile
 					barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
 					command.pipelineBarrier2(dependency);
 				}
+				Ps5PlusCheckpoints::Mark(command, "image copyBufferToImage site=6 %ux%u", info.extent.width, info.extent.height);
 				command.copyBufferToImage(buffer.Handle(), backing.image,
 				                          vk::ImageLayout::eTransferDstOptimal, destination_copy);
 			}
@@ -601,6 +608,7 @@ void Image::CopyMip(Image& source, uint32_t mip, uint32_t layer) {
 	Transit(vk::ImageLayout::eTransferDstOptimal, vk::AccessFlagBits2::eTransferWrite, {}, command);
 	source.Transit(vk::ImageLayout::eTransferSrcOptimal, vk::AccessFlagBits2::eTransferRead, {},
 	               command);
+	Ps5PlusCheckpoints::Mark(command, "image copyImage site=7 %ux%u", info.extent.width, info.extent.height);
 	command.copyImage(source.backing.image, vk::ImageLayout::eTransferSrcOptimal, backing.image,
 	                  vk::ImageLayout::eTransferDstOptimal, copy_count, copies.data());
 	Transit(vk::ImageLayout::eGeneral,
