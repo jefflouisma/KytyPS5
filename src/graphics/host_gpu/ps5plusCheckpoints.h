@@ -66,6 +66,21 @@ inline void Dump(const char* where) {
 		std::fprintf(stderr, "PS5PLUS GPU CHECKPOINT stage=0x%08x %s\n", static_cast<unsigned>(d.stage),
 		             d.pCheckpointMarker != nullptr ? static_cast<const char*>(d.pCheckpointMarker) : "?");
 	}
+	// Everything recorded after the last completed checkpoint up to the last started one.
+	uint32_t low = UINT32_MAX, high = 0;
+	for (const auto& d: data) {
+		unsigned n = 0;
+		if (d.pCheckpointMarker != nullptr &&
+		    std::sscanf(static_cast<const char*>(d.pCheckpointMarker), "#%u", &n) == 1) {
+			low  = n < low ? n : low;
+			high = n > high ? n : high;
+		}
+	}
+	if (low != UINT32_MAX && high > low && high - low <= 256u) {
+		for (uint32_t n = low + 1; n <= high; n++) {
+			std::fprintf(stderr, "PS5PLUS GPU PENDING %s\n", g_labels[(n - 1u) % g_labels.size()].data());
+		}
+	}
 	std::fflush(stderr);
 }
 
