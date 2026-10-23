@@ -577,6 +577,7 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 
 	auto features12 = WindowContext::RequiredVulkan12Features();
 	features12.shaderSharedInt64Atomics = supported_features12.shaderSharedInt64Atomics;
+	features12.hostQueryReset           = supported_features12.hostQueryReset; // PS5Plus debug draw timing
 	vk::PhysicalDeviceWorkgroupMemoryExplicitLayoutFeaturesKHR workgroup_layout {};
 	workgroup_layout.workgroupMemoryExplicitLayout =
 	    supported_workgroup_layout.workgroupMemoryExplicitLayout;
