@@ -1131,8 +1131,15 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	{
 		const auto* vs_program = state.vertex_info[0].stage.program;
 		const auto* ps_program = state.ps_input_info.stage.program;
-		Ps5PlusCheckpoints::Mark(buffer.Handle(), "draw %s idx=%u inst=%u ind=%u/%u@%llx prim=%u vs=%016llx ps=%016llx", draw.Name(), draw.index_count, draw.instance_count,
+		uint32_t cpu_args[5] {};
+		bool     gpu_args = false;
+		if (emit.indirect.address != 0 && Ps5PlusCheckpoints::g_cmd_set != nullptr) {
+			std::memcpy(cpu_args, reinterpret_cast<const void*>(emit.indirect.address), sizeof(cpu_args));
+			gpu_args = m_context.GetBufferCache().IsRegionGpuModified(emit.indirect.address, sizeof(cpu_args));
+		}
+		Ps5PlusCheckpoints::Mark(buffer.Handle(), "draw %s idx=%u inst=%u ind=%u/%u@%llx gpu=%d cpu=%x,%x,%x,%x,%x prim=%u vs=%016llx ps=%016llx", draw.Name(), draw.index_count, draw.instance_count,
 		                         emit.indirect.count, emit.indirect.stride, static_cast<unsigned long long>(emit.indirect.address),
+		                         gpu_args ? 1 : 0, cpu_args[0], cpu_args[1], cpu_args[2], cpu_args[3], cpu_args[4],
 		                         static_cast<uint32_t>(buffer.GetUserConfig().GetPrimType()),
 		                         static_cast<unsigned long long>(vs_program != nullptr ? vs_program->shader_hash : 0),
 		                         static_cast<unsigned long long>(ps_program != nullptr ? ps_program->shader_hash : 0));
@@ -1292,7 +1299,24 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
 	}
-	if (args_buffer.first != nullptr && Ps5PlusCheckpoints::g_cmd_set != nullptr) {
+	static const bool split_indirect   = Ps5PlusCheckpoints::EnvFlag("PS5PLUS_INDIRECT_SPLIT");
+	static const bool barrier_indirect = Ps5PlusCheckpoints::EnvFlag("PS5PLUS_INDIRECT_BARRIER");
+	static const bool capture_args     = Ps5PlusCheckpoints::EnvFlag("PS5PLUS_CAPTURE_ARGS");
+	if (args_buffer.first != nullptr && (split_indirect || barrier_indirect)) {
+		m_context.GetCommandScheduler().EndRendering();
+		if (barrier_indirect) {
+			vk::MemoryBarrier2 barrier {};
+			barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+			barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
+			barrier.dstStageMask  = vk::PipelineStageFlagBits2::eDrawIndirect;
+			barrier.dstAccessMask = vk::AccessFlagBits2::eIndirectCommandRead;
+			vk::DependencyInfo dependency {};
+			dependency.memoryBarrierCount = 1;
+			dependency.pMemoryBarriers    = &barrier;
+			vk_buffer.pipelineBarrier2(dependency);
+		}
+	}
+	if (args_buffer.first != nullptr && capture_args && Ps5PlusCheckpoints::g_cmd_set != nullptr) {
 		// Debug: copy the first GPU-written draw record next to this draw's checkpoint label.
 		static std::optional<Buffer> capture;
 		if (!capture) {
