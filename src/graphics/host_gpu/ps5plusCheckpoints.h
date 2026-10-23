@@ -18,7 +18,7 @@ namespace Libs::Graphics::Ps5PlusCheckpoints {
 inline PFN_vkCmdSetCheckpointNV        g_cmd_set  = nullptr;
 inline PFN_vkGetQueueCheckpointDataNV  g_get_data = nullptr;
 inline VkQueue                         g_queue    = VK_NULL_HANDLE;
-inline std::array<std::array<char, 192>, 32768> g_labels {};
+inline std::array<std::array<char, 320>, 32768> g_labels {};
 inline uint32_t                        g_next     = 0;
 inline std::array<char, 96>            g_pass {"(start)"};
 inline std::mutex                      g_mutex;
