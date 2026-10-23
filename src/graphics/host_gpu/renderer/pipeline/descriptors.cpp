@@ -1104,6 +1104,10 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 		         (shader_stage & GraphicsStages) == vk::ShaderStageFlags {}) ||
 		        (pipeline_bind_point == vk::PipelineBindPoint::eCompute &&
 		         shader_stage != vk::ShaderStageFlagBits::eCompute));
+		// The draw or dispatch is recorded into the current command buffer.
+		if (program.has_address_writes) {
+			m_context.GetBufferCache().NoteAddressWrites();
+		}
 	}
 	bool writes_gathered = false;
 	for (const auto* reader: prepared_bindings) {
