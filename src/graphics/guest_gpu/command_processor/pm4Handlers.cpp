@@ -1,4 +1,5 @@
 #include "common/assert.h"
+#include "graphics/host_gpu/ps5plusCheckpoints.h"
 #include "common/logging/log.h"
 #include "common/profiler.h"
 #include "common/stringUtils.h"
@@ -2193,6 +2194,12 @@ KYTY_CP_OP_PARSER(CpOpPushMarker) {
 
 	const char* str = reinterpret_cast<const char*>(buffer);
 
+	if (Ps5PlusCheckpoints::g_cmd_set != nullptr) {
+		auto& current = cp.CurrentBuffer();
+		if (!current.IsInvalid()) {
+			Ps5PlusCheckpoints::SetPass(current.Handle(), str);
+		}
+	}
 	static std::atomic<uint32_t> push_marker_log_count {0};
 	if (push_marker_log_count.fetch_add(1) < 128) {
 		LOGF("Push marker: %s\n", str);

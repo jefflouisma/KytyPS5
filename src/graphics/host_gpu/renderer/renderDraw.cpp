@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/renderDraw.h"
+#include "graphics/host_gpu/ps5plusCheckpoints.h"
 
 #include "common/assert.h"
 #include "common/common.h"
@@ -1127,6 +1128,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                                          vk::PrimitiveTopology topology, const DrawEmitInfo& emit,
                                          const DrawIndexBufferSource& index_source,
 	                                     bool primitive_restart_enable) {
+	Ps5PlusCheckpoints::Mark(buffer.Handle(), "draw");
 	auto& ucfg = buffer.GetUserConfig();
 	if (CopyDepthToColor(buffer, draw, emit, state)) {
 		return;
