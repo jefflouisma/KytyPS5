@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
 
 namespace Libs::Graphics {
@@ -41,6 +42,9 @@ uint8_t AllBytes(uint32_t size) {
 }
 
 uint64_t ValidMask(GraphicContext& graphics) {
+	if (std::getenv("PS5PLUS_PARSE_TIME_CLOCK") != nullptr) {
+		return 0; // dbg: keep parse-time GPU clock values and labels
+	}
 	uint32_t count = 0;
 	graphics.physical_device.getQueueFamilyProperties(&count, nullptr);
 	std::vector<vk::QueueFamilyProperties> families(count);
