@@ -2176,6 +2176,27 @@ void TextureCache::UnmapMemory(uint64_t address, uint64_t size) {
 	}
 }
 
+// A GPU-written image whose memory a more recently used image of the same layout has rendered
+// since, as dynamic resolution does, holds nothing the guest can still read.
+bool TextureCache::IsSupersededSibling(ImageId id, const Image& image) {
+	const auto& info = image.info;
+	const auto  tick = m_lru_cache.TickOf(image.lru_id);
+	for (const auto other_id: FindImagesInRegion(info.data.address, info.data.size, false)) {
+		const auto* other = m_slot_images.try_get(other_id);
+		if (other_id == id || other == nullptr || !other->registered || !other->IsGpuModified()) {
+			continue;
+		}
+		const auto& other_info = other->info;
+		if (other_info.data.address == info.data.address && other_info.type == info.type &&
+		    other_info.tile_mode == info.tile_mode && other_info.pixel_format == info.pixel_format &&
+		    other_info.samples == info.samples && other_info.resources == info.resources &&
+		    m_lru_cache.TickOf(other->lru_id) > tick) {
+			return true;
+		}
+	}
+	return false;
+}
+
 void TextureCache::RunGarbageCollector() {
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
@@ -2212,7 +2233,7 @@ void TextureCache::RunGarbageCollector() {
 				TouchImage(*owner);
 				continue;
 			}
-			if (owner->IsGpuModified()) {
+			if (owner->IsGpuModified() && !IsSupersededSibling(id, *owner)) {
 				const bool safe = owner->SafeToDownload();
 				if (safe && owner->info.IsTiled()) {
 					continue;

@@ -220,6 +220,7 @@ private:
 
 	void               InvalidateCpuAliases(uint64_t address, uint64_t size);
 	[[nodiscard]] bool DownloadImageMemory(ImageId id);
+	[[nodiscard]] bool IsSupersededSibling(ImageId id, const Image& image);
 
 	GraphicContext&                                   m_graphics;
 	CommandScheduler&                                 m_scheduler;

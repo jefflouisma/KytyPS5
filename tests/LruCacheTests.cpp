@@ -95,6 +95,8 @@ void TestTouchReordersAndSkips() {
   const auto below = Collect(cache, 30);
   Check(below.size() == 1 && below[0] == "b",
         "touched item did not adopt its new tick");
+  Check(cache.TickOf(a) == 40 && cache.TickOf(b) == 20 && cache.TickOf(c) == 35,
+        "TickOf does not report each item's last touch");
 
   // Touch the middle item.
   cache.Touch(b, 45);
