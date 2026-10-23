@@ -70,6 +70,8 @@ public:
 
 	// BufferCache state lives directly on the resource.
 	bool   is_deleted   = false;
+	// Shaders reached it through the BDA page table, which does not refresh its LRU entry.
+	bool   bda_resident = false;
 	int    stream_score = 0;
 	size_t lru_id       = 0;
 

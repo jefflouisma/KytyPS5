@@ -493,7 +493,12 @@ void BufferCache::JoinOverlap(BufferId new_id, BufferId overlap_id, bool accumul
 	new_buffer.CopyFrom(m_scheduler.Current(), overlap, 0,
 	                    overlap.CpuAddress() - new_buffer.CpuAddress(), overlap.Size());
 	MarkUnsubmittedWrite(overlap.CpuAddress(), overlap.Size());
+	new_buffer.bda_resident = new_buffer.bda_resident || overlap.bda_resident;
 	DeleteBuffer(overlap_id);
+}
+
+void BufferCache::MakeBdaResident(uint64_t vaddr, uint64_t size) {
+	m_slot_buffers[FindBuffer(vaddr, size)].bda_resident = true;
 }
 
 BufferId BufferCache::CreateBuffer(uint64_t vaddr, uint64_t size) {
@@ -784,6 +789,11 @@ void BufferCache::RunGarbageCollector() {
 		EXIT_IF(buffer.is_deleted);
 		m_memory_tracker.ValidateGpuDirtyOwnership(m_gpu_modified_ranges, buffer.CpuAddress(),
 		                                           buffer.Size(), "garbage collection");
+		if (buffer.bda_resident && !aggressive) {
+			// Evicting it would make the next shader load through it fault and read zero.
+			m_lru_cache.Touch(buffer.lru_id, tick);
+			return false;
+		}
 		const bool dirty = m_memory_tracker.IsRegionGpuModified(buffer.CpuAddress(), buffer.Size());
 		if (dirty && !aggressive) {
 			return false;
