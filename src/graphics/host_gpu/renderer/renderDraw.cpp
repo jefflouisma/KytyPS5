@@ -1338,7 +1338,11 @@ static std::optional<DrawEmitInfo> ResolveDrawEmit(const HW::UserConfig&        
                                                    uint32_t                     first_instance,
                                                    const DrawIndirectArgs&      indirect) {
 	if (indirect.address != 0) {
-		if (vs.stage.program->stage == ShaderType::Mesh ||
+		// Vulkan adds a record's vertex offset and first instance to the vertex and instance
+		// indices. The hardware applies them only through SGPRs, which these draws do not have,
+		// so a native fetch must not see them; only rewritten fetches consume them through
+		// Vulkan. The command processor draws the others with the offsets dropped.
+		if (vs.stage.program->stage == ShaderType::Mesh || !vs.fetch_embedded ||
 		    ucfg.GetPrimType() == Prospero::PrimitiveType::kQuadListLegacy) {
 			return std::nullopt;
 		}
