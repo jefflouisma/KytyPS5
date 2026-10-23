@@ -1137,6 +1137,35 @@ bool RenderExecutor::CopyDepthToColor(CommandBuffer& buffer, const DrawCallInfo&
 	return true;
 }
 
+namespace {
+// PS5Plus debug: GPU time of each draw (PS5PLUS_DRAW_TIMES), reported when it exceeds a threshold.
+struct DrawTimer {
+	static constexpr uint32_t Queries = 1u << 18u;
+	vk::Device                device;
+	vk::QueryPool             pool;
+	double                    period = 1.0;
+	uint32_t                  next   = 0;
+	uint64_t                  slow   = 0;
+};
+DrawTimer* DrawTimes(RenderContext& context) {
+	static const bool enabled = std::getenv("PS5PLUS_DRAW_TIMES") != nullptr;
+	static DrawTimer* timer   = nullptr;
+	if (!enabled || timer != nullptr) {
+		return timer;
+	}
+	auto& graphics = context.GetGraphics();
+	timer          = new DrawTimer;
+	timer->device  = graphics.device;
+	timer->period  = graphics.physical_device_properties.limits.timestampPeriod;
+	vk::QueryPoolCreateInfo info {};
+	info.queryType  = vk::QueryType::eTimestamp;
+	info.queryCount = DrawTimer::Queries;
+	EXIT_NOT_IMPLEMENTED(graphics.device.createQueryPool(&info, nullptr, &timer->pool) != vk::Result::eSuccess);
+	graphics.device.resetQueryPool(timer->pool, 0, DrawTimer::Queries);
+	return timer;
+}
+} // namespace
+
 void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buffer,
                                          const DrawCallInfo& draw, DrawRenderState& state,
                                          vk::PrimitiveTopology topology, const DrawEmitInfo& emit,
@@ -1361,6 +1390,11 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 	m_context.GetCommandScheduler().BeginRendering(rendering);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
+	auto* const    draw_timer = DrawTimes(m_context);
+	const uint32_t draw_query = draw_timer != nullptr ? (draw_timer->next += 2u) % DrawTimer::Queries : 0u;
+	if (draw_timer != nullptr) {
+		vk_buffer.writeTimestamp2(vk::PipelineStageFlagBits2::eTopOfPipe, draw_timer->pool, draw_query);
+	}
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
@@ -1374,6 +1408,32 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	} else {
 		vk_buffer.drawIndirect(args_buffer.first->Handle(), args_buffer.second,
 		                       emit.indirect.count, emit.indirect.stride);
+	}
+	if (draw_timer != nullptr) {
+		vk_buffer.writeTimestamp2(vk::PipelineStageFlagBits2::eBottomOfPipe, draw_timer->pool, draw_query + 1u);
+		const auto* vs_program = state.vertex_info[0].stage.program;
+		const auto* ps_program = state.ps_input_info.stage.program;
+		const uint64_t vs = vs_program != nullptr ? vs_program->shader_hash : 0;
+		const uint64_t ps = ps_program != nullptr ? ps_program->shader_hash : 0;
+		const uint32_t idx = draw.index_count;
+		const uint64_t ind = emit.indirect.address;
+		const uint32_t width = rendering.width;
+		const uint32_t height = rendering.height;
+		m_context.GetCommandScheduler().DeferOperation([draw_timer, draw_query, vs, ps, idx, ind, width, height] {
+			uint64_t ticks[2] {};
+			const auto result = draw_timer->device.getQueryPoolResults(draw_timer->pool, draw_query, 2, sizeof(ticks), ticks,
+			                                                         sizeof(uint64_t), vk::QueryResultFlagBits::e64);
+			draw_timer->device.resetQueryPool(draw_timer->pool, draw_query, 2);
+			if (result != vk::Result::eSuccess || ticks[1] < ticks[0]) {
+				return;
+			}
+			const double ms = static_cast<double>(ticks[1] - ticks[0]) * draw_timer->period / 1.0e6;
+			if (ms >= 20.0 && draw_timer->slow++ < 2000u) {
+				std::fprintf(stderr, "PS5PLUS SLOWDRAW %.1f ms idx=%u ind=%llx rt=%ux%u vs=%016llx ps=%016llx\n", ms, idx,
+				             static_cast<unsigned long long>(ind), width, height, static_cast<unsigned long long>(vs),
+				             static_cast<unsigned long long>(ps));
+			}
+		});
 	}
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Draws);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::DrawInstances, draw.instance_count);
