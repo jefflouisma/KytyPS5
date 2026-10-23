@@ -1134,6 +1134,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		Ps5PlusCheckpoints::Mark(buffer.Handle(), "draw %s idx=%u inst=%u vs=%016llx ps=%016llx", draw.Name(), draw.index_count, draw.instance_count,
 		                         static_cast<unsigned long long>(vs_program != nullptr ? vs_program->shader_hash : 0),
 		                         static_cast<unsigned long long>(ps_program != nullptr ? ps_program->shader_hash : 0));
+		if (ps_program != nullptr && Ps5PlusCheckpoints::SkipPixelShader(ps_program->shader_hash)) {
+			return;
+		}
 	}
 	auto& ucfg = buffer.GetUserConfig();
 	if (CopyDepthToColor(buffer, draw, emit, state)) {
