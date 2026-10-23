@@ -23,6 +23,31 @@ inline std::array<char, 96>            g_pass {"(start)"};
 inline std::mutex                      g_mutex;
 inline std::atomic<bool>               g_dumped {false};
 
+// PS5PLUS_SKIP_PS=hash[,hash...]: draws whose pixel shader hash is listed are not executed.
+inline bool SkipPixelShader(uint64_t hash) {
+	static const std::vector<uint64_t> skip = [] {
+		std::vector<uint64_t> list;
+		if (const char* env = std::getenv("PS5PLUS_SKIP_PS"); env != nullptr) {
+			for (const char* p = env; *p != '\0';) {
+				char*      end  = nullptr;
+				const auto hash = std::strtoull(p, &end, 16);
+				if (end == p) {
+					break;
+				}
+				list.push_back(hash);
+				p = *end == ',' ? end + 1 : end;
+			}
+		}
+		return list;
+	}();
+	for (const auto h: skip) {
+		if (h == hash) {
+			return true;
+		}
+	}
+	return false;
+}
+
 inline bool Requested() {
 	return std::getenv("PS5PLUS_GPU_CHECKPOINTS") != nullptr;
 }
@@ -80,6 +105,10 @@ inline void Dump(const char* where) {
 		for (uint32_t n = low + 1; n <= high; n++) {
 			std::fprintf(stderr, "PS5PLUS GPU PENDING %s\n", g_labels[(n - 1u) % g_labels.size()].data());
 		}
+	}
+	// What was recorded right after the last started checkpoint.
+	for (uint32_t n = high + 1; high != 0 && n <= g_next && n <= high + 48u; n++) {
+		std::fprintf(stderr, "PS5PLUS GPU NEXT %s\n", g_labels[(n - 1u) % g_labels.size()].data());
 	}
 	std::fflush(stderr);
 }
