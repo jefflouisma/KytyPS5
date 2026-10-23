@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
+#include "graphics/host_gpu/ps5plusCheckpoints.h"
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -140,6 +141,7 @@ void FaultManager::ProcessFaultBuffer() {
 	command.pushConstants(m_fault_process_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
 	                      sizeof(parameters), &parameters);
 	const auto num_workgroups = (BufferCache::FAULT_SUMMARY_WORDS + 63) / 64;
+	Ps5PlusCheckpoints::Mark(command, "fault buffer process");
 	command.dispatch(static_cast<uint32_t>(num_workgroups), 1, 1);
 	dependency.pBufferMemoryBarriers = &post_barrier;
 	command.pipelineBarrier2(dependency);
