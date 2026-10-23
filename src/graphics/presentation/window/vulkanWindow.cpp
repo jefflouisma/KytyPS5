@@ -625,7 +625,8 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	    feedback_dynamic.attachmentFeedbackLoopDynamicState;
 	graphics.maintenance8_enabled = maintenance8_extension && maintenance8.maintenance8;
 	graphics.conditional_rendering_enabled =
-	    conditional_rendering_extension && conditional_rendering.conditionalRendering;
+	    conditional_rendering_extension && conditional_rendering.conditionalRendering &&
+	    std::getenv("PS5PLUS_NO_CONDITIONAL") == nullptr;
 	LOGF("Vulkan maintenance8 support: %s\n",
 	     graphics.maintenance8_enabled ? "true" : "false");
 	LOGF("Vulkan depth feedback support: %s\n",
