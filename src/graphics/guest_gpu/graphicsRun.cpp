@@ -1,4 +1,5 @@
 #include "graphics/guest_gpu/graphicsRun.h"
+#include <cstdlib>
 
 #include "common/assert.h"
 #include "common/debugCounters.h"
@@ -944,7 +945,8 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 	// the records' offsets only through those SGPRs; Vulkan applies them, which matches
 	// while they are zero.
 	const DrawIndirectArgs records {args_addr, draw_count, stride_in_bytes};
-	if (registers.vertex_offset == Pm4::SH_NOP && registers.instance_offset == Pm4::SH_NOP &&
+	static const bool cpu_indirect = std::getenv("PS5PLUS_CPU_INDIRECT") != nullptr;
+	if (!cpu_indirect && registers.vertex_offset == Pm4::SH_NOP && registers.instance_offset == Pm4::SH_NOP &&
 	    registers.index_offset == Pm4::SH_NOP && (!indexed || m_index_buffer_size != 0) &&
 	    (indexed ? executor.DrawIndex(m_submit_id, CurrentBuffer(),
 	                                  {.index_count         = m_index_buffer_size,
