@@ -974,7 +974,16 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		FreeImage(cached_id);
 		return {merged_id};
 	}
-	if (requested.data.address >= cached.info.data.address && safe_to_delete) {
+	// Dynamic resolution renders one allocation at several extents with the same layout
+	// (PPSA08332 switches between up to five every frame). Keep the image of each extent:
+	// replacing it re-uploads stale guest memory over the GPU-rendered contents.
+	const bool resolution_sibling =
+	    requested.data.address == cached.info.data.address && requested.type == cached.info.type &&
+	    requested.tile_mode == cached.info.tile_mode &&
+	    requested.pixel_format == cached.info.pixel_format &&
+	    requested.samples == cached.info.samples && requested.resources == cached.info.resources;
+	if (requested.data.address >= cached.info.data.address && safe_to_delete &&
+	    !resolution_sibling) {
 		FreeImage(cached_id);
 	}
 	return {merged_id};
