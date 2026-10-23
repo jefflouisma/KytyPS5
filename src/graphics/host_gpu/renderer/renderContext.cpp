@@ -12,6 +12,8 @@
 
 namespace Libs::Graphics {
 
+extern thread_local int g_ps5plus_inval_source;
+
 RenderContext::RenderContext(GraphicContext& graphics)
     : m_graphics(graphics), m_render_executor(*this), m_command_scheduler(*this, graphics),
       m_descriptor_heap(graphics, m_command_scheduler.GetMasterSemaphore()),
@@ -87,7 +89,9 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr, ui
 	}
 	if (access == PageFaultAccess::Write) {
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
+		g_ps5plus_inval_source = 1;
 		m_texture_cache.InvalidateMemory(fault_vaddr, fault_size);
+		g_ps5plus_inval_source = 0;
 		m_image_heap.InvalidateMemory(fault_vaddr, fault_size);
 	} else if (resume_pc == nullptr ||
 	           !ShaderRecompiler::IR::ResumeSrtLoadFault(fault_pc, *resume_pc)) {
@@ -101,7 +105,9 @@ bool RenderContext::InvalidateMemory(uint64_t vaddr, uint64_t size) {
 		return false;
 	}
 	m_buffer_cache.InvalidateMemory(vaddr, size);
+	g_ps5plus_inval_source = 2;
 	m_texture_cache.InvalidateMemory(vaddr, size);
+	g_ps5plus_inval_source = 0;
 	m_image_heap.InvalidateMemory(vaddr, size);
 	return true;
 }

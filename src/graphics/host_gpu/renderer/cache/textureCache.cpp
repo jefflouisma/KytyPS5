@@ -77,6 +77,35 @@ struct TexDiag {
 };
 TexDiag g_tex_diag;
 
+} // namespace
+
+thread_local int g_ps5plus_inval_source = 0;
+
+namespace {
+
+struct CpuMarkDiag {
+	std::mutex m;
+	std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+	uint64_t marks[4] {};
+	uint64_t bytes[4] {};
+	uint64_t small[4] {};
+	void Note(int source, uint64_t size) {
+		std::scoped_lock lock {m};
+		marks[source & 3]++;
+		bytes[source & 3] += size;
+		if (size <= 4096) small[source & 3]++;
+		const auto now = std::chrono::steady_clock::now();
+		if (now - last < std::chrono::seconds(2)) return;
+		last = now;
+		std::fprintf(stderr, "CPUMARK 2s: other=%llu/%lluB fault=%llu/%lluB(small %llu) explicit=%llu/%lluB(small %llu)\n",
+		    (unsigned long long)marks[0], (unsigned long long)bytes[0], (unsigned long long)marks[1], (unsigned long long)bytes[1],
+		    (unsigned long long)small[1], (unsigned long long)marks[2], (unsigned long long)bytes[2], (unsigned long long)small[2]);
+		std::fflush(stderr);
+		for (int i = 0; i < 4; i++) { marks[i] = bytes[i] = small[i] = 0; }
+	}
+};
+CpuMarkDiag g_cpu_mark_diag;
+
 constexpr uint64_t NumFramesBeforeRemoval = 32;
 // Largest GPU-written tiled image (in texels) that is written back to guest memory on submit.
 constexpr uint64_t SmallTiledReadbackTexels = 64 * 64;
@@ -2128,6 +2157,7 @@ void TextureCache::InvalidateCpuAliases(uint64_t address, uint64_t size) {
 			continue;
 		}
 		if (owner->Overlaps(address, size)) {
+			g_cpu_mark_diag.Note(g_ps5plus_inval_source, size);
 			owner->MarkCpuDirty();
 			UntrackImage(id);
 			continue;
