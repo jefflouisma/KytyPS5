@@ -1131,7 +1131,9 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	{
 		const auto* vs_program = state.vertex_info[0].stage.program;
 		const auto* ps_program = state.ps_input_info.stage.program;
-		Ps5PlusCheckpoints::Mark(buffer.Handle(), "draw %s idx=%u inst=%u vs=%016llx ps=%016llx", draw.Name(), draw.index_count, draw.instance_count,
+		Ps5PlusCheckpoints::Mark(buffer.Handle(), "draw %s idx=%u inst=%u ind=%u/%u@%llx prim=%u vs=%016llx ps=%016llx", draw.Name(), draw.index_count, draw.instance_count,
+		                         emit.indirect.count, emit.indirect.stride, static_cast<unsigned long long>(emit.indirect.address),
+		                         static_cast<uint32_t>(buffer.GetUserConfig().GetPrimType()),
 		                         static_cast<unsigned long long>(vs_program != nullptr ? vs_program->shader_hash : 0),
 		                         static_cast<unsigned long long>(ps_program != nullptr ? ps_program->shader_hash : 0));
 		if (ps_program != nullptr && Ps5PlusCheckpoints::SkipPixelShader(ps_program->shader_hash)) {
@@ -1289,6 +1291,34 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	LogDrawPhase(draw.Name(), "BeginRendering");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x400u);
+	}
+	if (args_buffer.first != nullptr && Ps5PlusCheckpoints::g_cmd_set != nullptr) {
+		// Debug: copy the first GPU-written draw record next to this draw's checkpoint label.
+		static std::optional<Buffer> capture;
+		if (!capture) {
+			capture.emplace(m_context.GetGraphics(), m_context.GetCommandScheduler(), MemoryUsage::Download, 0,
+			                vk::BufferUsageFlagBits::eTransferDst,
+			                Ps5PlusCheckpoints::CaptureSlots * Ps5PlusCheckpoints::CaptureBytes);
+			Ps5PlusCheckpoints::g_capture = capture->Mapped().data();
+		}
+		const uint32_t label = Ps5PlusCheckpoints::g_next;
+		const uint32_t slot  = label % Ps5PlusCheckpoints::CaptureSlots;
+		m_context.GetCommandScheduler().EndRendering();
+		vk::MemoryBarrier2 barrier {};
+		barrier.srcStageMask  = vk::PipelineStageFlagBits2::eAllCommands;
+		barrier.srcAccessMask = vk::AccessFlagBits2::eMemoryWrite;
+		barrier.dstStageMask  = vk::PipelineStageFlagBits2::eTransfer;
+		barrier.dstAccessMask = vk::AccessFlagBits2::eTransferRead;
+		vk::DependencyInfo dependency {};
+		dependency.memoryBarrierCount = 1;
+		dependency.pMemoryBarriers    = &barrier;
+		vk_buffer.pipelineBarrier2(dependency);
+		const vk::BufferCopy region {args_buffer.second,
+		                             static_cast<vk::DeviceSize>(slot) * Ps5PlusCheckpoints::CaptureBytes,
+		                             draw.IsIndexed() ? sizeof(vk::DrawIndexedIndirectCommand)
+		                                              : sizeof(vk::DrawIndirectCommand)};
+		vk_buffer.copyBuffer(args_buffer.first->Handle(), capture->Handle(), 1, &region);
+		Ps5PlusCheckpoints::g_capture_label[slot] = label;
 	}
 	m_context.GetCommandScheduler().BeginRendering(rendering);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
