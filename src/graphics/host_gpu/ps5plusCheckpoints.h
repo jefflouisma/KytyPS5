@@ -58,6 +58,17 @@ inline bool EnvFlag(const char* name) {
 	return std::getenv(name) != nullptr;
 }
 
+// Checkpoints at the host tiler and fault-buffer dispatches can be turned off separately.
+inline bool TilerMarks() {
+	static const bool enabled = !EnvFlag("PS5PLUS_NO_TILER_MARKS");
+	return enabled;
+}
+
+inline bool FaultMarks() {
+	static const bool enabled = !EnvFlag("PS5PLUS_NO_FAULT_MARK");
+	return enabled;
+}
+
 inline bool Requested() {
 	return std::getenv("PS5PLUS_GPU_CHECKPOINTS") != nullptr;
 }
