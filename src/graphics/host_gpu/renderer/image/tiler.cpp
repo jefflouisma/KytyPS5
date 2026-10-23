@@ -320,7 +320,7 @@ void TileManager::Record(vk::Buffer source, uint64_t source_offset, uint64_t sou
 	    (groups + limits.maxComputeWorkGroupCount[0] - 1u) / limits.maxComputeWorkGroupCount[0]);
 	const uint32_t groups_x = static_cast<uint32_t>((groups + groups_y - 1u) / groups_y);
 	EXIT_NOT_IMPLEMENTED(groups_y > limits.maxComputeWorkGroupCount[1]);
-	Ps5PlusCheckpoints::Mark(command, "tiler dispatch site=1");
+	if (Ps5PlusCheckpoints::TilerMarks()) Ps5PlusCheckpoints::Mark(command, "tiler dispatch site=1");
 	command.dispatch(groups_x, groups_y, 1);
 
 	barriers[1].srcAccessMask = vk::AccessFlagBits::eShaderWrite;
@@ -546,7 +546,7 @@ void TileManager::ConvertD16(Result source, Result target, D16Direction directio
 			push.target_pitch = static_cast<uint32_t>(layout.target_row_stride);
 			command.pushConstants(m_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0,
 			                      sizeof(push), &push);
-			Ps5PlusCheckpoints::Mark(command, "tiler dispatch site=2");
+			if (Ps5PlusCheckpoints::TilerMarks()) Ps5PlusCheckpoints::Mark(command, "tiler dispatch site=2");
 			command.dispatch(static_cast<uint32_t>(groups_x), rows, 1);
 			row += rows;
 		}
@@ -616,7 +616,7 @@ void TileManager::TransformColor(Result input, Result output, ColorTransform tra
 	push.to_host         = to_host;
 	command.pushConstants(m_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push),
 	                      &push);
-	Ps5PlusCheckpoints::Mark(command, "tiler dispatch site=3");
+	if (Ps5PlusCheckpoints::TilerMarks()) Ps5PlusCheckpoints::Mark(command, "tiler dispatch site=3");
 	command.dispatch((pixels + 63u) / 64u, 1, 1);
 	barriers[1].srcAccessMask = vk::AccessFlagBits::eShaderWrite;
 	barriers[1].dstAccessMask = vk::AccessFlagBits::eTransferRead;
@@ -679,7 +679,7 @@ vk::Buffer TileManager::CheckColorClear(Result metadata, uint32_t slices, uint32
 	                  expand};
 	command.pushConstants(m_pipeline_layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(push),
 	                      &push);
-	Ps5PlusCheckpoints::Mark(command, "tiler dispatch site=4");
+	if (Ps5PlusCheckpoints::TilerMarks()) Ps5PlusCheckpoints::Mark(command, "tiler dispatch site=4");
 	command.dispatch(slices, 1, 1);
 	barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
 	barrier.dstAccessMask = vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite;
