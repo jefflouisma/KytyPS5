@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/streamBuffer.h"
+#include "graphics/host_gpu/ps5plusCheckpoints.h"
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -179,6 +180,7 @@ void Buffer::CopyFrom(CommandBuffer& command, const Buffer& source, uint64_t sou
 	native.pipelineBarrier(before_stage, vk::PipelineStageFlagBits::eTransfer,
 	                       vk::DependencyFlagBits::eByRegion, 0, nullptr, 2, before, 0, nullptr);
 	const vk::BufferCopy copy {source_offset, destination_offset, size};
+	Ps5PlusCheckpoints::Mark(native, "buffer copy bytes=%llu", static_cast<unsigned long long>(size));
 	native.copyBuffer(source.Handle(), Handle(), 1, &copy);
 	const vk::BufferMemoryBarrier after[] = {
 	    source.Barrier(source_offset, size, vk::AccessFlagBits::eTransferRead, source_after),
@@ -205,6 +207,7 @@ void Buffer::Fill(uint64_t offset, uint64_t size, uint32_t value) {
 	native.pipelineBarrier(vk::PipelineStageFlagBits::eAllCommands,
 	                       vk::PipelineStageFlagBits::eTransfer, vk::DependencyFlagBits::eByRegion,
 	                       0, nullptr, 1, &before, 0, nullptr);
+	Ps5PlusCheckpoints::Mark(native, "buffer fill bytes=%llu", static_cast<unsigned long long>(size));
 	native.fillBuffer(Handle(), offset, size, value);
 	const auto after = Barrier(offset, size, vk::AccessFlagBits::eTransferWrite,
 	                           vk::AccessFlagBits::eMemoryRead | vk::AccessFlagBits::eMemoryWrite);
