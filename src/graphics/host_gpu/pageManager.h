@@ -26,6 +26,11 @@ public:
 	void UpdatePageWatchersForRegion(uint64_t base_addr, RegionBits& mask);
 	// True when every page of the range is protected by a watcher, so its faults are handled.
 	[[nodiscard]] bool IsWatched(uint64_t vaddr, uint64_t size) const;
+	// Writes data to the backing of a range no watcher protects. False, with nothing written, when
+	// a watcher protects it or it has no backing alias. A watcher registering meanwhile waits for
+	// the store: a cache reads the stored bytes or sees the store fail. The range covers at most
+	// two pages.
+	[[nodiscard]] bool StoreUnwatched(uint64_t vaddr, uint64_t size, const void* data);
 
 private:
 	struct Impl;

@@ -11,12 +11,14 @@
 #include "graphics/host_gpu/renderer/cache/samplerCache.h"
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
+#include "graphics/host_gpu/renderer/gpuTimestamps.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptorHeap.h"
 #include "graphics/host_gpu/renderer/pipeline/imageHeap.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
 #include "kernel/eventQueue.h"
 
 #include <memory>
+#include <mutex>
 #include <shared_mutex>
 #include <vector>
 
@@ -38,6 +40,11 @@ public:
 	void                                    InitializeGpu(VideoOut::VideoOutDriver* video_out);
 	void                                    ShutdownGpu();
 	[[nodiscard]] GuestGpu&                 GetGpu() const;
+	// Queues work on the GPU thread from any thread, including completion callbacks that can
+	// outlive the guest GPU. False when no GPU accepts work.
+	[[nodiscard]] bool PostGpuCommand(Common::UniqueFunction<void>&& command);
+	// A completion stored guest memory: queues waiting on memory poll again.
+	void                                    NotifyGuestWrite();
 	[[nodiscard]] VideoOut::VideoOutDriver& GetVideoOut() const;
 
 	Common::Mutex&      GetMutex() { return m_mutex; }
@@ -48,6 +55,7 @@ public:
 	SamplerCache&       GetSamplerCache() { return m_sampler_cache; }
 	BufferCache&        GetBufferCache() { return m_buffer_cache; }
 	TextureCache&       GetTextureCache() { return m_texture_cache; }
+	GpuTimestamps&      GetGpuTimestamps() { return m_gpu_timestamps; }
 	RenderExecutor&     GetRenderExecutor() { return m_render_executor; }
 
 	[[nodiscard]] bool HandleFault(PageFaultAccess access, uint64_t fault_vaddr) noexcept;
@@ -55,6 +63,9 @@ public:
 	[[nodiscard]] bool IsMapped(uint64_t vaddr, uint64_t size) const noexcept;
 	// Write faults are resolved only where a page watcher removed write access.
 	[[nodiscard]] bool ResolvesWriteFaults(uint64_t vaddr, uint64_t size) const;
+	// Stores a result from a GPU completion callback. False when a cache watches the range or it
+	// has no backing alias: the GPU thread must store it, as a write there can fault and flush.
+	[[nodiscard]] bool StoreAtCompletion(uint64_t vaddr, const void* data, uint64_t size);
 	void               MapMemory(uint64_t vaddr, uint64_t size);
 	void               UnmapMemory(uint64_t vaddr, uint64_t size);
 	void               PrepareBda();
@@ -81,8 +92,10 @@ private:
 	BufferCache               m_buffer_cache;
 	TextureCache              m_texture_cache;
 	ImageHeap                 m_image_heap;
+	GpuTimestamps             m_gpu_timestamps;
 	mutable std::shared_mutex m_mapped_ranges_mutex;
 	RangeSet                  m_mapped_ranges;
+	std::mutex                m_gpu_mutex;
 	std::unique_ptr<GuestGpu> m_gpu;
 	VideoOut::VideoOutDriver* m_video_out = nullptr;
 	bool                      m_fault_process_pending = false;
