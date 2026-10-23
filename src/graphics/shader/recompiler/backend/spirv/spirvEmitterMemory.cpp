@@ -171,10 +171,26 @@ void SetFaultBit(EmitterState& state, uint32_t word, uint32_t index) {
 	const auto bit =
 	    Binary(state, spv::OpShiftLeftLogical, TypeU32(state), ConstantU32(state, 1),
 	           Binary(state, spv::OpBitwiseAnd, TypeU32(state), index, ConstantU32(state, 31)));
-	state.builder.AddFunction(spv::OpAtomicOr, TypeU32(state), state.builder.AllocateId(),
-	                          FaultElementPointer(state, word),
+	const auto pointer = FaultElementPointer(state, word);
+	// Every invocation that misses a page sets the same bit. Test it first: a set bit needs no
+	// write, and only the first invocations to miss serialize on the word.
+	const auto current = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpAtomicLoad, TypeU32(state), current, pointer,
+	                          ConstantU32(state, spv::ScopeDevice),
+	                          ConstantU32(state, spv::MemorySemanticsMaskNone));
+	const auto recorded =
+	    Binary(state, spv::OpINotEqual, TypeBool(state),
+	           Binary(state, spv::OpBitwiseAnd, TypeU32(state), current, bit), ConstantU32(state, 0));
+	const auto record_label = state.builder.AllocateId();
+	const auto merge_label  = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpSelectionMerge, merge_label, spv::SelectionControlMaskNone);
+	state.builder.AddFunction(spv::OpBranchConditional, recorded, merge_label, record_label);
+	EmitLabel(state, record_label);
+	state.builder.AddFunction(spv::OpAtomicOr, TypeU32(state), state.builder.AllocateId(), pointer,
 	                          ConstantU32(state, spv::ScopeDevice),
 	                          ConstantU32(state, spv::MemorySemanticsMaskNone), bit);
+	state.builder.AddFunction(spv::OpBranch, merge_label);
+	EmitLabel(state, merge_label);
 }
 
 // Sets the page bit and its summary bit; the processing pass scans only summarized words.
@@ -1411,6 +1427,10 @@ void DefineGetBdaPointer(EmitterState& state) {
 
 	EmitLabel(state, fault_label);
 	RecordBdaFault(state, page);
+	// The fault bits end in their own blocks; this one reaches the merge.
+	const auto fault_done_label = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpBranch, fault_done_label);
+	EmitLabel(state, fault_done_label);
 	state.builder.AddFunction(spv::OpBranch, merge_label);
 
 	EmitLabel(state, available_label);
@@ -1421,7 +1441,7 @@ void DefineGetBdaPointer(EmitterState& state) {
 
 	EmitLabel(state, merge_label);
 	const auto result = state.builder.AllocateId();
-	state.builder.AddFunction(spv::OpPhi, type, result, ConstantU64(state, 0), fault_label,
+	state.builder.AddFunction(spv::OpPhi, type, result, ConstantU64(state, 0), fault_done_label,
 	                          available, available_label);
 	state.builder.AddFunction(spv::OpReturnValue, result);
 	state.builder.AddFunction(spv::OpFunctionEnd);

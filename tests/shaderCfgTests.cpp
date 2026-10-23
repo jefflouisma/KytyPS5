@@ -5511,6 +5511,14 @@ void TestNewShaderRecompilerScalarMemoryBindingDomains() {
             raw_counts[static_cast<size_t>(BindingKind::Buffers)] == 0 &&
             raw_counts[static_cast<size_t>(BindingKind::FlattenedSrt)] == 0,
         "raw scalar load did not use only the DMA domain");
+  // A load that misses the page table tests its fault bits before setting them.
+  CheckSpirvBinaryValidates(raw.spirv);
+  {
+    const auto source = DisassembleSpirvBinary(raw.spirv);
+    Check(source.find("OpAtomicLoad") != std::string::npos &&
+              source.find("OpAtomicOr") != std::string::npos,
+          "BDA faults do not test the fault bits before setting them");
+  }
   Check(count_live_memory_ops(
             raw.program, ShaderRecompiler::IR::ValueOpcode::LoadAddressU32,
             ShaderRecompiler::IR::ResourceKind::ScalarAddress) == 2u,
