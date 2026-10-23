@@ -2487,6 +2487,168 @@ void TestLoopSelectedSignedKey() {
   Check(keys.empty(), "signed loop count enumerated selectors past a negative bound");
 }
 
+void TestCongruentLoopInductionKey() {
+  namespace CFG = Libs::Graphics::ShaderRecompiler::CFG;
+  // PPSA08332 pixel shader 0xa91064e2063b564b:
+  // for (i = 0; i < *(u32 *)(s[0:1] + 0x20); ++i) {
+  //   key = *(s32 *)(s[0:1] + i * 0x30 + 0x11e0);
+  //   if (key >= 0) sample(*(T# *)(s[0:1] + (key << 5) + 0x180));
+  // }
+  // i lives in a VGPR lane. Forwarding each v_readlane leaves one header Phi per read,
+  // so the bound, the record read and the increment each use their own copy of i.
+  enum class Copies { Shared, Split, Unrelated };
+  const auto make_plan = [](Copies copies) {
+    Fixture fixture(ShaderType::Pixel);
+    fixture.program.wave_size = 64u;
+    auto *entry = fixture.block;
+    auto *header = fixture.AddBlock();
+    auto *body = fixture.AddBlock();
+    auto *use = fixture.AddBlock();
+    auto *latch = fixture.AddBlock();
+    auto *exit = fixture.AddBlock();
+    entry->AddBranch(header);
+    header->AddBranch(exit);
+    header->AddBranch(body);
+    body->AddBranch(latch);
+    body->AddBranch(use);
+    use->AddBranch(latch);
+    latch->AddBranch(header);
+    entry->terminator = {.kind = CFG::TerminatorKind::Branch, .true_block = header};
+    use->terminator = {.kind = CFG::TerminatorKind::Branch, .true_block = latch};
+    latch->terminator = {.kind = CFG::TerminatorKind::Branch, .true_block = header};
+    exit->terminator.kind = CFG::TerminatorKind::Return;
+
+    const auto base = fixture.Address(fixture.UserData(0), fixture.UserData(1));
+    const auto copy = [&] {
+      return &header->AppendNewInst(ValueOpcode::Phi, {}, static_cast<uint64_t>(Type::U32));
+    };
+    auto *bounded = copy();
+    auto *selected = copies == Copies::Shared ? bounded : copy();
+    auto *stepped = copies == Copies::Shared ? bounded : copy();
+
+    // s_load_dword count, s[0:1], 0x20; s_cmp_lt_u32 i, count; s_cbranch_scc0 exit
+    fixture.block = header;
+    MemoryInfo count_memory;
+    count_memory.kind = ResourceKind::ScalarAddress;
+    count_memory.offset = 0x20u;
+    const auto count = fixture.Emit(ValueOpcode::LoadAddressU32,
+        {base, Value(0u), Value(0u), Value(true)}, fixture.AddMemory(count_memory, 0x40));
+    const auto in_range = fixture.Emit(ValueOpcode::ULessThan32, {Value(bounded), count});
+    header->condition = fixture.Emit(ValueOpcode::ConditionRef,
+        {fixture.Emit(ValueOpcode::LogicalNot, {in_range})}, CFG::BranchCondition::SccZero);
+    header->terminator = {.kind = CFG::TerminatorKind::ConditionalBranch,
+                          .true_block = exit, .false_block = body};
+    const auto step = fixture.Emit(ValueOpcode::IAdd32, {Value(stepped), Value(1u)}, 0, latch);
+    for (auto *phi : {bounded, selected, stepped}) {
+      if (phi->NumArgs() != 0u) continue;
+      phi->AddPhiOperand(entry, Value(0u));
+      // Unrelated: the bound tests a header value which never advances with i.
+      phi->AddPhiOperand(latch, copies == Copies::Unrelated && phi == bounded ? Value(0u) : step);
+    }
+
+    // s_load_dword key, s[0:1], i * 0x30 offset:0x11e0; s_cmp_ge_i32 key, 0; s_cbranch_scc0 latch
+    fixture.block = body;
+    MemoryInfo selector;
+    selector.kind = ResourceKind::ScalarAddress;
+    selector.offset = 0x11e0u;
+    const auto key = fixture.Emit(ValueOpcode::LoadAddressU32,
+        {base, fixture.Emit(ValueOpcode::IMul32, {Value(selected), Value(0x30u)}), Value(0u),
+         Value(true)},
+        fixture.AddMemory(selector, 0x100));
+    const auto nonnegative = fixture.Emit(ValueOpcode::SGreaterThanEqual32, {key, Value(0u)});
+    body->condition = fixture.Emit(ValueOpcode::ConditionRef,
+        {fixture.Emit(ValueOpcode::LogicalNot, {nonnegative})}, CFG::BranchCondition::SccZero);
+    body->terminator = {.kind = CFG::TerminatorKind::ConditionalBranch,
+                        .true_block = latch, .false_block = use};
+
+    // s_load_dwordx8 image, s[0:1], key << 5 offset:0x180, beside a 64-byte per-key record.
+    fixture.block = use;
+    MemoryInfo record;
+    record.kind = ResourceKind::ScalarAddress;
+    record.offset = 0x800u;
+    fixture.Emit(ValueOpcode::LoadAddressU32,
+        {base, fixture.Emit(ValueOpcode::ShiftLeftLogical32, {key, Value(6u)}), Value(0u),
+         Value(true)},
+        fixture.AddMemory(record, 0x110));
+    const auto offset = fixture.Emit(ValueOpcode::ShiftLeftLogical32, {key, Value(5u)});
+    std::array<Value, 8> words;
+    for (uint32_t word = 0; word < words.size(); ++word) {
+      MemoryInfo memory;
+      memory.kind = ResourceKind::ScalarAddress;
+      memory.offset = 0x180u + word * sizeof(uint32_t);
+      words[word] = fixture.Emit(ValueOpcode::LoadAddressU32,
+                                 {base, offset, Value(0u), Value(true)},
+                                 fixture.AddMemory(memory, 0x118));
+    }
+    const auto image = fixture.Image(words, 0x128);
+    const auto sampler = fixture.Sampler({Value(0u), Value(0u), Value(0u), Value(0u)});
+    MemoryInfo sample;
+    sample.kind = ResourceKind::Image;
+    sample.image_dimension = Decoder::ImageDimension::Dim2D;
+    fixture.Emit(ValueOpcode::ImageSampleRaw, {image, sampler, fixture.ImageAddress(), Value(true)},
+                 fixture.AddMemory(sample, 0x128));
+    fixture.PlanAndTrack();
+    const auto source = fixture.program.info.images[0].source;
+    const auto &indirect = fixture.program.descriptor_sources[source].indirect_descriptor;
+    Check(indirect && indirect->selector.has_value() && indirect->selector->stride == 0x30u &&
+              indirect->selector->offset == 0x11e0u && indirect->table_offset == 0u &&
+              indirect->table_immediate == 0x180u && !indirect->key_count.IsEmpty() &&
+              !indirect->signed_count && indirect->selector_nonnegative,
+          "loop record key was not bounded by its unsigned pointer-backed count");
+    return ExtractResourcePlan(fixture.program);
+  };
+
+  // Selector words 1, -1, 0 and 2; records for keys -1 to 2.
+  LinearTestMemory memory;
+  const auto word_at = [&](uint64_t address) { return (address - memory.base) / 4u; };
+  const uint32_t selectors[] = {1u, UINT32_MAX, 0u, 2u};
+  for (uint32_t i = 0; i < 4u; ++i) memory.words[word_at(0x1000u + 0x11e0u + i * 0x30u)] = selectors[i];
+  for (const uint32_t key : {UINT32_MAX, 0u, 1u, 2u}) {
+    const auto word = word_at(0x1000u + 0x180u + key * 32u);
+    memory.words[word] = 0x200u + (key + 1u);
+    memory.words[word + 1u] = static_cast<uint32_t>(
+        Libs::Graphics::Prospero::BufferFormat::k32_32_32_32Float) << 20u;
+    memory.words[word + 3u] = Libs::Graphics::DstSel(4, 5, 6, 7) |
+        (static_cast<uint32_t>(Libs::Graphics::Prospero::ImageType::kColor2D) << 28u);
+  }
+  std::array<uint32_t, 2> user_data{0x1000u, 0u};
+  SrtRuntime runtime{.user_data = user_data,
+                     .read_memory = ReadLinearTestMemory,
+                     .userdata = &memory,
+                     .read_specialization_memory = ReadLinearTestMemory};
+  const auto materialize = [&](Copies copies, uint32_t count, std::vector<uint32_t> &keys,
+                               std::vector<uint32_t> &descriptors) {
+    memory.words[word_at(0x1000u + 0x20u)] = count;
+    const auto plan = make_plan(copies);
+    ResourceSnapshot snapshot;
+    ResourceSpecialization specialization;
+    if (!MaterializeResources(plan, runtime, snapshot, specialization)) return false;
+    const auto mapping = specialization.images[0].indirect_mapping_offset;
+    keys.clear();
+    for (uint32_t entry = 0; entry < snapshot.flattened_srt[mapping]; ++entry)
+      keys.push_back(snapshot.flattened_srt[mapping + 1u + entry * 2u]);
+    descriptors.clear();
+    for (const auto &image : snapshot.images) descriptors.push_back(image.dwords[0]);
+    return true;
+  };
+  std::vector<uint32_t> keys, descriptors;
+  for (const auto copies : {Copies::Shared, Copies::Split}) {
+    // Three records: key -1 fails the guard and the fourth record lies past the count.
+    Check(materialize(copies, 3u, keys, descriptors) && keys == std::vector<uint32_t>{0u, 1u} &&
+              std::ranges::find(descriptors, 0x200u) == descriptors.end() &&
+              std::ranges::find(descriptors, 0x203u) == descriptors.end(),
+          "loop record keys were not limited to the guarded records below the count");
+    Check(materialize(copies, 4u, keys, descriptors) &&
+              keys == std::vector<uint32_t>{0u, 1u, 2u},
+          "loop record keys did not follow the runtime count");
+    // s_cmp_lt_u32: an all-ones count is not an empty signed loop.
+    Check(!materialize(copies, UINT32_MAX, keys, descriptors),
+          "unsigned loop count above the probe limit materialized");
+  }
+  CheckFatal([&] { make_plan(Copies::Unrelated); }, "not a valid runtime value",
+             "a bound on a header value other than the induction limited its record key");
+}
+
 void TestBoundedComputeImageLoop() {
   namespace CFG = Libs::Graphics::ShaderRecompiler::CFG;
   enum class Clamp { None, Right, Left, Dynamic };
@@ -9474,6 +9636,7 @@ int main() {
     Run("bit scan mask proof", TestBitScanMaskProof);
     Run("lane-guarded bit scan table", TestLaneGuardedBitScanTable);
     Run("loop-selected signed key", TestLoopSelectedSignedKey);
+    Run("congruent loop induction key", TestCongruentLoopInductionKey);
     Run("bounded compute image loop", TestBoundedComputeImageLoop);
     Run("uniformized material image keys", TestUniformizedMaterialImageKeys);
     Run("indexed material image keys", TestIndexedMaterialImageKeys);

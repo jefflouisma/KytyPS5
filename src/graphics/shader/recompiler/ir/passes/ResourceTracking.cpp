@@ -1905,6 +1905,17 @@ private:
 		uint32_t initial_arm;
 	};
 
+	// Lane forwarding of a spilled induction can leave one header Phi per native read.
+	// Phis of one block with equivalent incoming values hold the same value on each entry.
+	bool CongruentPhi(Value value, const Inst& phi) const {
+		value = value.Resolve();
+		const auto* sibling = value.TryInstruction();
+		return sibling == &phi ||
+		       (sibling != nullptr && sibling->GetOpcode() == ValueOpcode::Phi &&
+		        sibling->Parent() == phi.Parent() &&
+		        EquivalentValue(m_program, value, Value(const_cast<Inst*>(&phi))));
+	}
+
 	std::optional<Induction> MatchInduction(Value key, const auto& accepts_step) const {
 		key = key.Resolve();
 		const auto* phi = key.TryInstruction();
@@ -1918,9 +1929,9 @@ private:
 			    step == nullptr || step->GetOpcode() != ValueOpcode::IAdd32 ||
 			    step->Parent() == nullptr) continue;
 			uint32_t increment = 0;
-			if ((step->Arg(0).Resolve() == key &&
+			if ((CongruentPhi(step->Arg(0), *phi) &&
 			     ImmediateU32(step->Arg(1), increment) && accepts_step(initial_value.U32(), increment)) ||
-			    (step->Arg(1).Resolve() == key &&
+			    (CongruentPhi(step->Arg(1), *phi) &&
 			     ImmediateU32(step->Arg(0), increment) && accepts_step(initial_value.U32(), increment)))
 				return Induction {phi, step, initial};
 		}
@@ -1947,7 +1958,14 @@ private:
 		if (incoming != increment_block) return {};
 
 		const auto stops = [&](const Block* block) { return block == phi->Parent(); };
-		for (const auto& use_of_key: phi->Uses()) {
+		// The bound may test another copy of the same induction.
+		std::vector<Use> uses;
+		for (const auto& sibling: *phi->Parent()) {
+			if (sibling.GetOpcode() == ValueOpcode::Phi &&
+			    CongruentPhi(Value(const_cast<Inst*>(&sibling)), *phi))
+				uses.insert(uses.end(), sibling.Uses().begin(), sibling.Uses().end());
+		}
+		for (const auto& use_of_key: uses) {
 			const auto* compare = use_of_key.user;
 			if (use_of_key.operand != 0u ||
 			    !accepts_bound(*compare, initial_arm)) continue;
