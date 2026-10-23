@@ -1147,7 +1147,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		const auto* ps_program = state.ps_input_info.stage.program;
 		uint32_t cpu_args[5] {};
 		bool     gpu_args = false;
-		if (emit.indirect.address != 0 && Ps5PlusCheckpoints::g_cmd_set != nullptr) {
+		static const bool cpu_view = Ps5PlusCheckpoints::EnvFlag("PS5PLUS_CPU_ARGS");
+		if (emit.indirect.address != 0 && Ps5PlusCheckpoints::g_cmd_set != nullptr && cpu_view) {
 			std::memcpy(cpu_args, reinterpret_cast<const void*>(emit.indirect.address), sizeof(cpu_args));
 			gpu_args = m_context.GetBufferCache().IsRegionGpuModified(emit.indirect.address, sizeof(cpu_args));
 		}
