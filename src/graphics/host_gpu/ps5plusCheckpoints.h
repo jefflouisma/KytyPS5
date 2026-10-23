@@ -9,6 +9,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -22,6 +23,11 @@ inline uint32_t                        g_next     = 0;
 inline std::array<char, 96>            g_pass {"(start)"};
 inline std::mutex                      g_mutex;
 inline std::atomic<bool>               g_dumped {false};
+// First indirect draw record of labeled draws, copied by the GPU right before the draw.
+inline constexpr uint32_t              CaptureSlots = 4096;
+inline constexpr uint32_t              CaptureBytes = 32;
+inline const uint8_t*                  g_capture    = nullptr;
+inline std::array<uint32_t, CaptureSlots> g_capture_label {};
 
 // PS5PLUS_SKIP_PS=hash[,hash...]: draws whose pixel shader hash is listed are not executed.
 inline bool SkipPixelShader(uint64_t hash) {
@@ -101,9 +107,23 @@ inline void Dump(const char* where) {
 			high = n > high ? n : high;
 		}
 	}
+	const auto capture = [](uint32_t n) {
+		const auto slot = n % CaptureSlots;
+		if (g_capture == nullptr || g_capture_label[slot] != n) {
+			return;
+		}
+		uint32_t words[5];
+		std::memcpy(words, g_capture + static_cast<size_t>(slot) * CaptureBytes, sizeof(words));
+		std::fprintf(stderr, "PS5PLUS GPU   args #%u: %08x %08x %08x %08x %08x\n", n, words[0], words[1],
+		             words[2], words[3], words[4]);
+	};
+	for (uint32_t n = low >= 8u ? low - 8u : 0u; low != UINT32_MAX && n <= low; n++) {
+		capture(n);
+	}
 	if (low != UINT32_MAX && high > low && high - low <= 256u) {
 		for (uint32_t n = low + 1; n <= high; n++) {
 			std::fprintf(stderr, "PS5PLUS GPU PENDING %s\n", g_labels[(n - 1u) % g_labels.size()].data());
+			capture(n);
 		}
 	}
 	// What was recorded right after the last started checkpoint.
