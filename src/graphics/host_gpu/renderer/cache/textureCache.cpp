@@ -22,6 +22,7 @@
 #include <bit>
 #include <chrono>
 #include <cstdio>
+#include <string>
 #include <unordered_map>
 #include <cinttypes>
 #include <cstring>
@@ -76,6 +77,46 @@ struct TexDiag {
 	}
 };
 TexDiag g_tex_diag;
+
+struct ChurnDiag {
+	std::mutex m;
+	std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+	std::unordered_map<int, uint64_t> inserts, frees;
+	struct Variant { uint32_t levels, layers, w, h; int format; };
+	std::unordered_map<uint64_t, std::vector<Variant>> variants;
+	std::unordered_map<uint64_t, uint64_t> addr_inserts;
+	void Note(bool insert, int line, const ImageInfo& info) {
+		std::scoped_lock lock {m};
+		(insert ? inserts : frees)[line]++;
+		if (insert) {
+			addr_inserts[info.data.address]++;
+			auto& v = variants[info.data.address];
+			Variant n {info.resources.levels, info.resources.layers, info.extent.width, info.extent.height, static_cast<int>(info.pixel_format)};
+			bool seen = false;
+			for (const auto& x: v) seen |= x.levels == n.levels && x.layers == n.layers && x.w == n.w && x.h == n.h && x.format == n.format;
+			if (!seen && v.size() < 6) v.push_back(n);
+		}
+		const auto now = std::chrono::steady_clock::now();
+		if (now - last < std::chrono::seconds(2)) return;
+		last = now;
+		std::string out = "CHURN 2s inserts:";
+		for (const auto& [l, c]: inserts) out += " L" + std::to_string(l) + "=" + std::to_string(c);
+		out += " frees:";
+		for (const auto& [l, c]: frees) out += " L" + std::to_string(l) + "=" + std::to_string(c);
+		std::fprintf(stderr, "%s\n", out.c_str());
+		std::vector<std::pair<uint64_t, uint64_t>> top(addr_inserts.begin(), addr_inserts.end());
+		std::sort(top.begin(), top.end(), [](auto& l, auto& r) { return l.second > r.second; });
+		for (size_t i = 0; i < std::min<size_t>(5, top.size()); i++) {
+			std::string vs;
+			for (const auto& x: variants[top[i].first])
+				vs += " [" + std::to_string(x.w) + "x" + std::to_string(x.h) + " mips=" + std::to_string(x.levels) + " layers=" + std::to_string(x.layers) + " fmt=" + std::to_string(x.format) + "]";
+			std::fprintf(stderr, "CHURN   addr=0x%llx inserts=%llu%s\n", (unsigned long long)top[i].first, (unsigned long long)top[i].second, vs.c_str());
+		}
+		std::fflush(stderr);
+		inserts.clear(); frees.clear(); variants.clear(); addr_inserts.clear();
+	}
+};
+ChurnDiag g_churn_diag;
 
 } // namespace
 
@@ -295,7 +336,8 @@ TextureCache::BindingType TextureCache::UploadBinding(const Image& image) {
 	return image.usage.storage ? BindingType::Storage : BindingType::Texture;
 }
 
-ImageId TextureCache::InsertImage(const ImageInfo& info) {
+ImageId TextureCache::InsertImage(const ImageInfo& info, int ps5plus_line) {
+	g_churn_diag.Note(true, ps5plus_line, info);
 	const auto id = m_slot_images.insert(m_graphics, m_scheduler, info);
 	RegisterImage(id);
 	return id;
@@ -420,8 +462,9 @@ void TextureCache::DeleteImage(ImageId id) {
 	}
 }
 
-void TextureCache::FreeImage(ImageId id) {
+void TextureCache::FreeImage(ImageId id, int ps5plus_line) {
 	auto& image = m_slot_images[id];
+	g_churn_diag.Note(false, ps5plus_line, image.info);
 	if (image.IsGpuModified()) {
 		image.ClearGpuModified();
 	}
