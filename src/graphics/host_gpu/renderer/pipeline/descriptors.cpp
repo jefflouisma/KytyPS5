@@ -907,6 +907,74 @@ void RenderExecutor::PrepareGraphicsBindings(std::span<PreparedBindings* const> 
 	}
 }
 
+void MergeGuestRanges(std::vector<GuestRange>& ranges) {
+	std::sort(ranges.begin(), ranges.end(),
+	          [](const GuestRange& a, const GuestRange& b) { return a.address < b.address; });
+	size_t merged = 0;
+	for (const auto range: ranges) {
+		if (range.size == 0 || range.address > UINT64_MAX - range.size) {
+			EXIT("invalid image overlap range\n");
+		}
+		if (merged != 0 && range.address <= ranges[merged - 1].End()) {
+			auto& last = ranges[merged - 1];
+			last.size  = std::max(last.End(), range.End()) - last.address;
+		} else {
+			ranges[merged++] = range;
+		}
+	}
+	ranges.resize(merged);
+}
+
+bool ScalarReadsMayOverlap(std::span<const std::pair<uint64_t, uint64_t>> reads,
+                           std::span<const GuestRange>                    writes) {
+	if (writes.empty()) {
+		return false;
+	}
+	for (const auto [address, size]: reads) {
+		if (size == 0 || address > UINT64_MAX - size) {
+			return true;
+		}
+		const auto next = std::upper_bound(
+		    writes.begin(), writes.end(), address,
+		    [](uint64_t value, const GuestRange& range) { return value < range.End(); });
+		if (next != writes.end() && next->address < address + size) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void RenderExecutor::GatherWriteRanges(std::span<PreparedBindings* const> prepared_bindings) {
+	m_write_ranges.clear();
+	for (const auto id: m_bound_images) {
+		const auto* image = m_context.GetTextureCache().m_slot_images.try_get(id);
+		if (image == nullptr || (!image->binding.shader_write && !image->binding.is_target)) {
+			continue;
+		}
+		for (const auto written:
+		     {image->info.data, image->info.stencil, image->info.metadata.range}) {
+			if (written.size != 0) {
+				m_write_ranges.push_back(written);
+			}
+		}
+	}
+	for (const auto* writer: prepared_bindings) {
+		const auto& program = *writer->runtime->program;
+		for (const auto& resource: program.info.buffers) {
+			if (!resource.written || resource.descriptor_index == UINT32_MAX) continue;
+			const auto& written = writer->buffer_sources[resource.descriptor_index];
+			// Same extent as the exact check in CommitBindings.
+			const bool linear = (resource.packed_stride & ((1u << 14u) | (1u << 20u))) == 0u;
+			const auto written_size =
+			    linear ? std::min<uint64_t>(written.size, resource.write_extent) : written.size;
+			if (written_size != 0) {
+				m_write_ranges.push_back({written.address, written_size});
+			}
+		}
+	}
+	MergeGuestRanges(m_write_ranges);
+}
+
 void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
                                     vk::PipelineBindPoint              pipeline_bind_point,
                                     const PipelineCache::Pipeline&     pipeline,
@@ -943,9 +1011,7 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 		        (pipeline_bind_point == vk::PipelineBindPoint::eCompute &&
 		         shader_stage != vk::ShaderStageFlagBits::eCompute));
 	}
-	// Ranges written by bound images, gathered once for all scalar reads of this draw.
-	std::vector<GuestRange> image_writes;
-	bool                    image_writes_gathered = false;
+	bool writes_gathered = false;
 	for (const auto* reader: prepared_bindings) {
 		const auto& reads = reader->runtime->resources->specialization_reads;
 		if (reads.empty()) continue;
@@ -954,24 +1020,23 @@ void RenderExecutor::CommitBindings(CommandBuffer&                     buffer,
 				EXIT("scalar resource reads cannot be proven disjoint from shader address writes\n");
 			}
 		}
-		if (!image_writes_gathered) {
-			image_writes_gathered = true;
+		if (!writes_gathered) {
+			writes_gathered = true;
+			GatherWriteRanges(prepared_bindings);
+		}
+		if (!ScalarReadsMayOverlap(reads, m_write_ranges)) continue;
+		// Name the overlapping write.
+		for (const auto [address, size]: reads) {
 			for (const auto id: m_bound_images) {
 				const auto* image = m_context.GetTextureCache().m_slot_images.try_get(id);
 				if (image == nullptr ||
 				    (!image->binding.shader_write && !image->binding.is_target)) continue;
 				for (const auto written: {image->info.data, image->info.stencil,
 				                          image->info.metadata.range}) {
-					if (written.size != 0) {
-						image_writes.push_back(written);
+					if (written.size != 0 &&
+					    ImageRangeOverlaps(address, size, written.address, written.size)) {
+						EXIT("scalar resource reads overlap an image or attachment write\n");
 					}
-				}
-			}
-		}
-		for (const auto [address, size]: reads) {
-			for (const auto written: image_writes) {
-				if (ImageRangeOverlaps(address, size, written.address, written.size)) {
-					EXIT("scalar resource reads overlap an image or attachment write\n");
 				}
 			}
 			for (const auto* writer: prepared_bindings) {
