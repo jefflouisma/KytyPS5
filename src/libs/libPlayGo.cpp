@@ -54,7 +54,13 @@ union PlayGoOptionalChunk {
 };
 
 static bool ensure_chunks_loaded() {
-	return g_chunks_num != 0 || Loader::SystemContentGetChunksNum(&g_chunks_num);
+	if (g_chunks_num == 0 && !Loader::SystemContentGetChunksNum(&g_chunks_num)) {
+		// A dump without PlayGo chunk metadata is a complete installation: report every chunk
+		// as local, as --playgo-hack did. PPSA08332 06.005 otherwise waits for chunks forever.
+		g_chunks_num = PLAYGO_DEFAULT_CHUNKS_NUM;
+		LOGF("PlayGo: no chunk metadata, reporting %" PRIu32 " local chunks\n", g_chunks_num);
+	}
+	return true;
 }
 
 static bool is_valid_chunk(uint16_t chunk_id) {
@@ -98,10 +104,7 @@ int KYTY_SYSV_ABI PlayGoInitialize(const PlayGoInitParams* init) {
 	     "\t reserved = %" PRId32 "\n",
 	     reinterpret_cast<uint64_t>(init->buf_addr), init->buf_size, init->reserved);
 
-	if (Config::PlayGoHackEnabled() && !ensure_chunks_loaded()) {
-		g_chunks_num = PLAYGO_DEFAULT_CHUNKS_NUM;
-		LOGF("\t playgo_hack chunks = %" PRIu32 "\n", g_chunks_num);
-	}
+	ensure_chunks_loaded();
 
 	return OK;
 }
