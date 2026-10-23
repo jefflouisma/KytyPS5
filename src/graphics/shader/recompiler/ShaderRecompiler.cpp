@@ -849,6 +849,28 @@ TranslateResult TranslateProgram(const Decoder::Program& decoded, const CompileO
 	// Cleanup also exposes profitable folds by removing dead predicate consumers.
 	simplify();
 	if (decoded.has_swap_pc) {
+		for (const auto* block: ir.blocks) {
+			for (const auto& inst: *block) {
+				if (inst.GetOpcode() != IR::ValueOpcode::GetShaderBase) continue;
+				std::fprintf(stderr, "GETPC hash=0x%016llx stage=%s uses=%zu blocks=%zu\n",
+				             static_cast<unsigned long long>(options.shader_hash), StageName(options.stage),
+				             inst.UseCount(), ir.blocks.size());
+				std::function<void(const IR::Inst&, int)> dump = [&](const IR::Inst& i, int depth) {
+					for (const auto& use: i.Uses()) {
+						std::string extra;
+						for (size_t a = 0; a < use.user->NumArgs(); a++) {
+							const auto arg = use.user->Arg(a);
+							if (arg.IsImmediate()) extra += " imm" + std::to_string(a) + "=" + std::to_string(arg.U64());
+						}
+						std::fprintf(stderr, "GETPC %*s%s (operand %zu)%s\n", depth * 2, "",
+						             IR::ValueOpcodeName(use.user->GetOpcode()), use.operand, extra.c_str());
+						if (depth < 6) dump(*use.user, depth + 1);
+					}
+				};
+				dump(inst, 1);
+				std::fflush(stderr);
+			}
+		}
 		// Leaf returns are resolved CFG edges; native PC values must not escape into GPU data.
 		for (const auto* block: ir.blocks)
 			for (const auto& inst: *block)
