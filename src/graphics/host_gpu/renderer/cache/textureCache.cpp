@@ -20,6 +20,9 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
+#include <cstdio>
+#include <unordered_map>
 #include <cinttypes>
 #include <cstring>
 #include <limits>
@@ -32,6 +35,47 @@
 namespace Libs::Graphics {
 
 namespace {
+
+// PS5Plus temporary diagnostics: why images are re-uploaded.
+struct TexDiag {
+	enum Kind { ReuploadBuffer, ReuploadCpu, InvalidateGpu, Publish, Count };
+	static constexpr const char* names[Count] = {"reup_buf", "reup_cpu", "inval_gpu", "publish"};
+	std::mutex m;
+	std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+	uint64_t totals[Count] {};
+	uint64_t sources[4] {};
+	struct Entry { uint64_t counts[Count] {}; uint64_t size = 0; int format = 0; int tile = 0; size_t overlaps = 0; };
+	std::unordered_map<uint64_t, Entry> by_addr;
+	void Note(Kind kind, uint64_t address, uint64_t size, int format, int tile, size_t overlaps, int source = 0) {
+		std::scoped_lock lock {m};
+		totals[kind]++;
+		if (kind == InvalidateGpu) sources[source & 3]++;
+		auto& e = by_addr[address];
+		e.counts[kind]++; e.size = size; e.format = format; e.tile = tile; e.overlaps = std::max(e.overlaps, overlaps);
+		const auto now = std::chrono::steady_clock::now();
+		if (now - last < std::chrono::seconds(2)) return;
+		last = now;
+		std::fprintf(stderr, "TEXDIAG 2s: reup_buf=%llu reup_cpu=%llu inval_gpu=%llu (src1=%llu src2=%llu src3=%llu) publish=%llu images=%zu\n",
+		    (unsigned long long)totals[0], (unsigned long long)totals[1], (unsigned long long)totals[2],
+		    (unsigned long long)sources[1], (unsigned long long)sources[2], (unsigned long long)sources[3],
+		    (unsigned long long)totals[3], by_addr.size());
+		std::vector<std::pair<uint64_t, const Entry*>> top;
+		for (const auto& [a, en]: by_addr) top.emplace_back(a, &en);
+		std::sort(top.begin(), top.end(), [](auto& l, auto& r) {
+			uint64_t ls = 0, rs = 0; for (int i = 0; i < Count; i++) { ls += l.second->counts[i]; rs += r.second->counts[i]; } return ls > rs; });
+		for (size_t i = 0; i < std::min<size_t>(8, top.size()); i++) {
+			const auto* en = top[i].second;
+			std::fprintf(stderr, "TEXDIAG   addr=0x%llx size=%llu fmt=%d tile=%d overlaps=%zu buf=%llu cpu=%llu inval=%llu pub=%llu\n",
+			    (unsigned long long)top[i].first, (unsigned long long)en->size, en->format, en->tile, en->overlaps,
+			    (unsigned long long)en->counts[0], (unsigned long long)en->counts[1], (unsigned long long)en->counts[2], (unsigned long long)en->counts[3]);
+		}
+		std::fflush(stderr);
+		for (auto& t: totals) t = 0;
+		for (auto& t: sources) t = 0;
+		by_addr.clear();
+	}
+};
+TexDiag g_tex_diag;
 
 constexpr uint64_t NumFramesBeforeRemoval = 32;
 // Largest GPU-written tiled image (in texels) that is written back to guest memory on submit.
@@ -826,6 +870,8 @@ bool Publish(TextureCache& cache, Image& image) {
 	auto [buffer, offset] =
 	    cache.m_buffer_cache.ObtainBuffer(image.info.data.address, image.info.data.size, true);
 	cache.DownloadImage(image, *buffer, offset, image.info.data.size, image.info.resources.levels);
+	g_tex_diag.Note(TexDiag::Publish, image.info.data.address, image.info.data.size,
+	                static_cast<int>(image.info.pixel_format), static_cast<int>(image.info.tile_mode), 0);
 	image.ClearGpuModified();
 	image.MarkBufferModified();
 	return true;
@@ -1322,6 +1368,9 @@ void TextureCache::RefreshImage(ImageId id) {
 	if (!cpu_dirty) {
 		return;
 	}
+	g_tex_diag.Note(image.IsBufferModified() ? TexDiag::ReuploadBuffer : TexDiag::ReuploadCpu, image.info.data.address,
+	                image.info.data.size, static_cast<int>(image.info.pixel_format), static_cast<int>(image.info.tile_mode),
+	                FindImagesInRegion(image.info.data.address, image.info.data.size, false).size());
 	InitializeImage(id);
 }
 
@@ -2051,7 +2100,7 @@ bool TextureCache::DownloadImageMemory(ImageId id) {
 	return true;
 }
 
-void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
+void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size, int source) {
 	if (!GuestRange {address, size}.Valid()) {
 		return;
 	}
@@ -2064,6 +2113,8 @@ void TextureCache::InvalidateMemoryFromGPU(uint64_t address, uint64_t size) {
 		if (image.IsGpuModified()) {
 			image.ClearGpuModified();
 		}
+		g_tex_diag.Note(TexDiag::InvalidateGpu, address, size, static_cast<int>(image.info.pixel_format),
+		                static_cast<int>(image.info.tile_mode), 0, source);
 		image.MarkBufferModified();
 	}
 }
