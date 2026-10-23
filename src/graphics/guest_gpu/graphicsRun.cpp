@@ -33,7 +33,19 @@
 #include <utility>
 #include <vector>
 
+#include <chrono>
+#include <cstdio>
 namespace Libs::Graphics {
+
+struct Ps5PlusWait {
+	uint64_t addr  = 0;
+	uint64_t ref   = 0;
+	uint64_t mask  = 0;
+	uint32_t func  = 0;
+	uint64_t value = 0;
+};
+static Ps5PlusWait g_ps5plus_waits[8];
+
 
 static thread_local CommandProcessor* g_current_processor = nullptr;
 static thread_local Pm4Execution*     g_current_execution = nullptr;
@@ -331,6 +343,10 @@ void CommandProcessor::WaitRegMem(uint32_t func, const T* addr, T ref, T mask, u
 
 	(void)poll;
 	if (!TestWaitRegMemValue(ReadLabel(addr), ref, mask, func)) {
+		// PS5Plus debug: remember what this queue waits for.
+		g_ps5plus_waits[std::min<uint32_t>(m_interrupt_event_id >= 0x20 ? static_cast<uint32_t>(m_interrupt_event_id - 0x20 + 1) : 0u, 7u)] = {reinterpret_cast<uint64_t>(addr), static_cast<uint64_t>(ref),
+		                                                           static_cast<uint64_t>(mask), func,
+		                                                           static_cast<uint64_t>(ReadLabel(addr))};
 		SuspendPm4();
 	}
 }
@@ -538,6 +554,26 @@ void GuestGpu::ThreadRun(void* data) {
 
 		EXIT_IF(!has_submission);
 		const bool complete = gpu->Process(submission);
+		{
+			// PS5Plus debug: report queue backlogs every 5 s.
+			static auto last = std::chrono::steady_clock::now();
+			const auto  now  = std::chrono::steady_clock::now();
+			if (now - last > std::chrono::seconds(5)) {
+				last = now;
+				Common::LockGuard lock(gpu->m_queue_mutex);
+				for (uint32_t q = 0; q < gpu->m_queues.size(); q++) {
+					if (gpu->m_queues[q].empty() && !(q == submission.queue_id && !complete)) {
+						continue;
+					}
+					const auto& w = g_ps5plus_waits[std::min<uint32_t>(q, 7u)];
+					std::fprintf(stderr, "PS5PLUS QUEUE %u pending=%zu blocked=%d current=%d complete=%d wait addr=%llx ref=%llx mask=%llx func=%u value=%llx\n", q,
+					             gpu->m_queues[q].size(), gpu->m_queues[q].empty() ? -1 : (gpu->m_queues[q].front().blocked ? 1 : 0),
+					             q == submission.queue_id ? 1 : 0, complete ? 1 : 0, static_cast<unsigned long long>(w.addr),
+					             static_cast<unsigned long long>(w.ref), static_cast<unsigned long long>(w.mask), w.func,
+					             static_cast<unsigned long long>(w.value));
+				}
+			}
+		}
 
 		Common::LockGuard lock(gpu->m_queue_mutex);
 		if (!complete) {
