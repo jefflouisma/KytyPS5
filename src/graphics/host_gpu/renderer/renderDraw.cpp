@@ -1143,6 +1143,7 @@ struct DrawTimer {
 	static constexpr uint32_t Queries = 1u << 18u;
 	vk::Device                device;
 	vk::QueryPool             pool;
+	vk::QueryPool             stats;
 	double                    period = 1.0;
 	uint32_t                  next   = 0;
 	uint64_t                  slow   = 0;
@@ -1162,6 +1163,16 @@ DrawTimer* DrawTimes(RenderContext& context) {
 	info.queryCount = DrawTimer::Queries;
 	EXIT_NOT_IMPLEMENTED(graphics.device.createQueryPool(&info, nullptr, &timer->pool) != vk::Result::eSuccess);
 	graphics.device.resetQueryPool(timer->pool, 0, DrawTimer::Queries);
+	vk::QueryPoolCreateInfo stats {};
+	stats.queryType          = vk::QueryType::ePipelineStatistics;
+	stats.queryCount         = DrawTimer::Queries / 2u;
+	stats.pipelineStatistics = vk::QueryPipelineStatisticFlagBits::eInputAssemblyVertices |
+	                           vk::QueryPipelineStatisticFlagBits::eInputAssemblyPrimitives |
+	                           vk::QueryPipelineStatisticFlagBits::eVertexShaderInvocations |
+	                           vk::QueryPipelineStatisticFlagBits::eClippingPrimitives |
+	                           vk::QueryPipelineStatisticFlagBits::eFragmentShaderInvocations;
+	EXIT_NOT_IMPLEMENTED(graphics.device.createQueryPool(&stats, nullptr, &timer->stats) != vk::Result::eSuccess);
+	graphics.device.resetQueryPool(timer->stats, 0, DrawTimer::Queries / 2u);
 	return timer;
 }
 } // namespace
@@ -1394,6 +1405,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	const uint32_t draw_query = draw_timer != nullptr ? (draw_timer->next += 2u) % DrawTimer::Queries : 0u;
 	if (draw_timer != nullptr) {
 		vk_buffer.writeTimestamp2(vk::PipelineStageFlagBits2::eTopOfPipe, draw_timer->pool, draw_query);
+		vk_buffer.beginQuery(draw_timer->stats, draw_query / 2u, {});
 	}
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
@@ -1410,6 +1422,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		                       emit.indirect.count, emit.indirect.stride);
 	}
 	if (draw_timer != nullptr) {
+		vk_buffer.endQuery(draw_timer->stats, draw_query / 2u);
 		vk_buffer.writeTimestamp2(vk::PipelineStageFlagBits2::eBottomOfPipe, draw_timer->pool, draw_query + 1u);
 		const auto* vs_program = state.vertex_info[0].stage.program;
 		const auto* ps_program = state.ps_input_info.stage.program;
@@ -1423,15 +1436,23 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			uint64_t ticks[2] {};
 			const auto result = draw_timer->device.getQueryPoolResults(draw_timer->pool, draw_query, 2, sizeof(ticks), ticks,
 			                                                         sizeof(uint64_t), vk::QueryResultFlagBits::e64);
+			uint64_t counts[5] {};
+			const auto stats_result = draw_timer->device.getQueryPoolResults(
+			    draw_timer->stats, draw_query / 2u, 1, sizeof(counts), counts, sizeof(counts), vk::QueryResultFlagBits::e64);
 			draw_timer->device.resetQueryPool(draw_timer->pool, draw_query, 2);
+			draw_timer->device.resetQueryPool(draw_timer->stats, draw_query / 2u, 1);
 			if (result != vk::Result::eSuccess || ticks[1] < ticks[0]) {
 				return;
 			}
 			const double ms = static_cast<double>(ticks[1] - ticks[0]) * draw_timer->period / 1.0e6;
 			if (ms >= 20.0 && draw_timer->slow++ < 2000u) {
-				std::fprintf(stderr, "PS5PLUS SLOWDRAW %.1f ms idx=%u ind=%llx rt=%ux%u vs=%016llx ps=%016llx\n", ms, idx,
-				             static_cast<unsigned long long>(ind), width, height, static_cast<unsigned long long>(vs),
-				             static_cast<unsigned long long>(ps));
+				std::fprintf(stderr,
+				             "PS5PLUS SLOWDRAW %.1f ms idx=%u ind=%llx rt=%ux%u vs=%016llx ps=%016llx ia_v=%llu ia_p=%llu vs_inv=%llu clip_p=%llu fs_inv=%llu%s\n",
+				             ms, idx, static_cast<unsigned long long>(ind), width, height, static_cast<unsigned long long>(vs),
+				             static_cast<unsigned long long>(ps), static_cast<unsigned long long>(counts[0]),
+				             static_cast<unsigned long long>(counts[1]), static_cast<unsigned long long>(counts[2]),
+				             static_cast<unsigned long long>(counts[3]), static_cast<unsigned long long>(counts[4]),
+				             stats_result == vk::Result::eSuccess ? "" : " (no stats)");
 			}
 		});
 	}
