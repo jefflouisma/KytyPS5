@@ -2195,7 +2195,7 @@ KYTY_CP_OP_PARSER(CpOpPushMarker) {
 	const char* str = reinterpret_cast<const char*>(buffer);
 
 	if (Ps5PlusCheckpoints::g_cmd_set != nullptr) {
-		auto& current = cp.CurrentBuffer();
+		auto& current = cp.Ps5PlusCurrentBuffer();
 		if (!current.IsInvalid()) {
 			Ps5PlusCheckpoints::SetPass(current.Handle(), str);
 		}
