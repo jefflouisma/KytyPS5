@@ -705,6 +705,8 @@ if(BUILD_TESTING)
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --buffer-cache-gc-only)
 	add_test(NAME address_range_residency
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --address-range-residency-only)
+	add_test(NAME buffer_cache_detached_download
+		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --buffer-cache-detached-only)
 	add_test(NAME color_render_target_1d
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --rt1d-only)
 
