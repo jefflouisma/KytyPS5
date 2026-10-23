@@ -10,9 +10,46 @@
 #include <algorithm>
 #include <cstring>
 
+#include <chrono>
+#include <cstdio>
+#include <mutex>
+#include <unordered_map>
+#include <vector>
 namespace Libs::Graphics {
 
 extern thread_local int g_ps5plus_inval_source;
+
+namespace {
+struct FaultDiag {
+	std::mutex m;
+	std::chrono::steady_clock::time_point last = std::chrono::steady_clock::now();
+	uint64_t reads = 0, writes = 0;
+	std::unordered_map<uint64_t, std::pair<uint64_t, uint64_t>> pages; // page -> (reads, writes)
+	std::unordered_map<uint64_t, uint64_t> pcs;
+	void Note(bool write, uint64_t vaddr, uint64_t pc) {
+		std::scoped_lock lock {m};
+		(write ? writes : reads)++;
+		auto& p = pages[vaddr >> 16];
+		(write ? p.second : p.first)++;
+		pcs[pc]++;
+		const auto now = std::chrono::steady_clock::now();
+		if (now - last < std::chrono::seconds(2)) return;
+		last = now;
+		std::fprintf(stderr, "FAULTS 2s: reads=%llu writes=%llu pages64k=%zu pcs=%zu\n", (unsigned long long)reads, (unsigned long long)writes, pages.size(), pcs.size());
+		std::vector<std::pair<uint64_t, std::pair<uint64_t, uint64_t>>> top(pages.begin(), pages.end());
+		std::sort(top.begin(), top.end(), [](auto& l, auto& r) { return l.second.first + l.second.second > r.second.first + r.second.second; });
+		for (size_t i = 0; i < std::min<size_t>(6, top.size()); i++)
+			std::fprintf(stderr, "FAULTS   page=0x%llx0000 reads=%llu writes=%llu\n", (unsigned long long)top[i].first, (unsigned long long)top[i].second.first, (unsigned long long)top[i].second.second);
+		std::vector<std::pair<uint64_t, uint64_t>> tp(pcs.begin(), pcs.end());
+		std::sort(tp.begin(), tp.end(), [](auto& l, auto& r) { return l.second > r.second; });
+		for (size_t i = 0; i < std::min<size_t>(5, tp.size()); i++)
+			std::fprintf(stderr, "FAULTS   pc=0x%llx count=%llu\n", (unsigned long long)tp[i].first, (unsigned long long)tp[i].second);
+		std::fflush(stderr);
+		reads = writes = 0; pages.clear(); pcs.clear();
+	}
+};
+FaultDiag g_fault_diag;
+} // namespace
 
 RenderContext::RenderContext(GraphicContext& graphics)
     : m_graphics(graphics), m_render_executor(*this), m_command_scheduler(*this, graphics),
@@ -87,6 +124,7 @@ bool RenderContext::HandleFault(PageFaultAccess access, uint64_t fault_vaddr, ui
 	    !m_page_manager.IsTrackingFault(fault_vaddr, access)) {
 		return false;
 	}
+	g_fault_diag.Note(access == PageFaultAccess::Write, fault_vaddr, fault_pc);
 	if (access == PageFaultAccess::Write) {
 		m_buffer_cache.InvalidateMemory(fault_vaddr, fault_size);
 		g_ps5plus_inval_source = 1;
