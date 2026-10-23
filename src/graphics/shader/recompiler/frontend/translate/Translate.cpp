@@ -1182,7 +1182,13 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 			    std::ranges::any_of(decoded.instructions, [](const Decoder::Instruction& inst) {
 				    return inst.opcode == Decoder::Opcode::DS_ORDERED_COUNT;
 			    });
-			if (ordered_append) {
+			// Waves spin until the previous wave releases, which needs a host that runs waves of a
+			// dispatch in order with forward progress, as hosts with 64-lane subgroups (AMD) do.
+			// On 32-lane hosts (NVIDIA) the waves of PPSA08332's ordered-append passes do not hand
+			// off: the bounded spin serializes the dispatch for minutes, or the driver kills the
+			// context (Xid 109). Counts stay exact there; only the order of appends is relaxed.
+			const bool ordered_waves = cs->host_subgroup_size >= 64u;
+			if (ordered_append && ordered_waves) {
 				result.info.uses_ordered_append      = true;
 				result.info.ordered_append_waves     = waves;
 				result.info.ordered_append_wave_size = wave_size;
