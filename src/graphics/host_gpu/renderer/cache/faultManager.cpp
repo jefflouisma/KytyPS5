@@ -1,5 +1,6 @@
 #include "graphics/host_gpu/renderer/cache/faultManager.h"
 #include "graphics/host_gpu/ps5plusCheckpoints.h"
+#include <cstdio>
 
 #include "common/assert.h"
 #include "common/logging/log.h"
@@ -154,6 +155,19 @@ void FaultManager::ProcessFaultBuffer() {
 		// The counter keeps counting faults that did not fit in the area.
 		const auto count =
 		    std::min(static_cast<uint32_t>(faults[0]), static_cast<uint32_t>(MaxPageFaults - 1));
+		{
+			// PS5Plus debug: fault volume.
+			static uint64_t passes = 0, faulted = 0, total = 0;
+			passes++;
+			total += static_cast<uint32_t>(faults[0]);
+			faulted += faults[0] != 0 ? 1u : 0u;
+			if (faults[0] != 0 && (faulted <= 50u || faulted % 200u == 0u)) {
+				std::fprintf(stderr, "PS5PLUS FAULTS pass=%llu faulted=%llu count=%u total=%llu first=%llx\n",
+				             static_cast<unsigned long long>(passes), static_cast<unsigned long long>(faulted),
+				             static_cast<uint32_t>(faults[0]), static_cast<unsigned long long>(total),
+				             static_cast<unsigned long long>(count != 0 ? BufferCache::GuestAddress(faults[1]) : 0));
+			}
+		}
 		for (uint32_t index = 1; index <= count; ++index) {
 			const auto address = BufferCache::GuestAddress(faults[index]);
 			fault_ranges.Add(address, BufferCache::CACHING_PAGESIZE);
