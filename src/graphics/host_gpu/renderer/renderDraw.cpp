@@ -1389,6 +1389,56 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		m_context.GetCommandScheduler().EndRendering();
 		ShaderWriteBarrier(vk_buffer, shader_write_stages);
 	}
+	static const bool post_args = Ps5PlusCheckpoints::EnvFlag("PS5PLUS_POST_ARGS");
+	if (post_args && args_buffer.first != nullptr) {
+		// Debug: copy the record this draw consumed and report outliers once the GPU is done.
+		constexpr uint32_t   Slots = 65536;
+		static std::optional<Buffer> records;
+		static uint32_t      next = 0;
+		static uint64_t      seen = 0;
+		if (!records) {
+			records.emplace(m_context.GetGraphics(), m_context.GetCommandScheduler(), MemoryUsage::Download, 0,
+			                vk::BufferUsageFlagBits::eTransferDst, uint64_t {Slots} * 32u);
+		}
+		const uint32_t slot = next++ % Slots;
+		m_context.GetCommandScheduler().EndRendering();
+		const auto record_size = draw.IsIndexed() ? sizeof(vk::DrawIndexedIndirectCommand)
+		                                          : sizeof(vk::DrawIndirectCommand);
+		const vk::BufferCopy region {args_buffer.second, uint64_t {slot} * 32u, record_size};
+		vk_buffer.copyBuffer(args_buffer.first->Handle(), records->Handle(), 1, &region);
+		vk::MemoryBarrier2 to_host {};
+		to_host.srcStageMask  = vk::PipelineStageFlagBits2::eTransfer;
+		to_host.srcAccessMask = vk::AccessFlagBits2::eTransferWrite;
+		to_host.dstStageMask  = vk::PipelineStageFlagBits2::eHost;
+		to_host.dstAccessMask = vk::AccessFlagBits2::eHostRead;
+		vk::DependencyInfo dependency {};
+		dependency.memoryBarrierCount = 1;
+		dependency.pMemoryBarriers    = &to_host;
+		vk_buffer.pipelineBarrier2(dependency);
+		const auto* vs_program = state.vertex_info[0].stage.program;
+		const auto* ps_program = state.ps_input_info.stage.program;
+		const uint64_t vs = vs_program != nullptr ? vs_program->shader_hash : 0;
+		const uint64_t ps = ps_program != nullptr ? ps_program->shader_hash : 0;
+		const uint32_t limit = draw.index_count;
+		const uint32_t count = emit.indirect.count;
+		const uint64_t address = emit.indirect.address;
+		const bool indexed = draw.IsIndexed();
+		m_context.GetCommandScheduler().DeferOperation([slot, vs, ps, limit, count, address, indexed] {
+			uint32_t w[5] {};
+			std::memcpy(w, records->Mapped().data() + uint64_t {slot} * 32u, sizeof(w));
+			const uint32_t vertices  = w[0];
+			const uint32_t instances = w[1];
+			const uint32_t first     = indexed ? w[2] : 0u;
+			const bool outlier = instances > 4u || (indexed && (vertices > limit || first > limit || vertices + first > limit)) ||
+			                     (!indexed && vertices > (1u << 20u));
+			if (outlier || (seen++ % 4000u) == 0u) {
+				std::fprintf(stderr, "PS5PLUS ARGS %s n=%llu @%llx x%u limit=%u: %08x %08x %08x %08x %08x vs=%016llx ps=%016llx\n",
+				             outlier ? "OUTLIER" : "sample", static_cast<unsigned long long>(seen), static_cast<unsigned long long>(address),
+				             count, limit, w[0], w[1], w[2], w[3], w[4], static_cast<unsigned long long>(vs),
+				             static_cast<unsigned long long>(ps));
+			}
+		});
+	}
 	LogDrawPhase(draw.Name(), "DrawComplete");
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x700u);
