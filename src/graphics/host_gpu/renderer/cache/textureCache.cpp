@@ -1,4 +1,5 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
+#include <cstdlib>
 
 #include "common/alignment.h"
 #include "common/assert.h"
@@ -992,7 +993,10 @@ TextureCache::OverlapResult TextureCache::ResolveOverlap(const ImageInfo& reques
 		}
 		return count;
 	};
-	constexpr size_t MaxResolutionSiblings = 4;
+	static const size_t MaxResolutionSiblings = [] {
+		const char* env = std::getenv("PS5PLUS_MAX_SIBLINGS");
+		return env != nullptr ? static_cast<size_t>(std::strtoul(env, nullptr, 10)) : size_t {4};
+	}();
 	if (requested.data.address >= cached.info.data.address && safe_to_delete &&
 	    (!same_layout(requested) || siblings() > MaxResolutionSiblings)) {
 		FreeImage(cached_id);
