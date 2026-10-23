@@ -1128,7 +1128,13 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
                                          vk::PrimitiveTopology topology, const DrawEmitInfo& emit,
                                          const DrawIndexBufferSource& index_source,
 	                                     bool primitive_restart_enable) {
-	Ps5PlusCheckpoints::Mark(buffer.Handle(), "draw %s idx=%u inst=%u vs=0x%llx ps=0x%llx", draw.Name(), draw.index_count, draw.instance_count, static_cast<unsigned long long>(buffer.GetShaders().GetVs().gs_regs.data_addr), static_cast<unsigned long long>(buffer.GetShaders().GetPs().ps_regs.data_addr));
+	{
+		const auto* vs_program = state.vertex_info[0].stage.program;
+		const auto* ps_program = state.ps_input_info.stage.program;
+		Ps5PlusCheckpoints::Mark(buffer.Handle(), "draw %s idx=%u inst=%u vs=%016llx ps=%016llx", draw.Name(), draw.index_count, draw.instance_count,
+		                         static_cast<unsigned long long>(vs_program != nullptr ? vs_program->shader_hash : 0),
+		                         static_cast<unsigned long long>(ps_program != nullptr ? ps_program->shader_hash : 0));
+	}
 	auto& ucfg = buffer.GetUserConfig();
 	if (CopyDepthToColor(buffer, draw, emit, state)) {
 		return;
