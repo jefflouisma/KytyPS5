@@ -97,6 +97,30 @@ uint64_t GraphicContext::GetDeviceMemoryUsage() const {
 	return usage;
 }
 
+uint64_t GraphicContext::GetDeviceMemoryInUse() const {
+	if (!CanReportMemoryUsage() || allocator == nullptr) {
+		return 0;
+	}
+	VmaBudget budgets[VK_MAX_MEMORY_HEAPS] {};
+	vmaGetHeapBudgets(allocator, budgets);
+	const bool discrete =
+	    physical_device_properties.deviceType == vk::PhysicalDeviceType::eDiscreteGpu;
+	uint64_t in_use = 0;
+	for (uint32_t heap = 0; heap < physical_device_memory_properties.memoryHeapCount; heap++) {
+		const bool device_local =
+		    static_cast<bool>(physical_device_memory_properties.memoryHeaps[heap].flags &
+		                      vk::MemoryHeapFlagBits::eDeviceLocal);
+		if (discrete && !device_local) {
+			continue;
+		}
+		// Freed allocations leave space inside the allocator's blocks that new ones reuse.
+		const auto& statistics = budgets[heap].statistics;
+		const auto  unused     = statistics.blockBytes - statistics.allocationBytes;
+		in_use += budgets[heap].usage - std::min<uint64_t>(unused, budgets[heap].usage);
+	}
+	return in_use;
+}
+
 uint32_t GraphicContext::GetHeapUsage(std::span<HeapUsage, VK_MAX_MEMORY_HEAPS> heaps) const {
 	if (allocator == nullptr) {
 		return 0;

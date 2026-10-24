@@ -772,7 +772,7 @@ bool BufferCache::IsRegionCpuModified(uint64_t vaddr, uint64_t size) {
 void BufferCache::RunGarbageCollector() {
 	const auto tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
-		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
+		m_total_used_memory = m_graphics.GetDeviceMemoryInUse();
 	}
 	if (m_total_used_memory < m_trigger_gc_memory) {
 		return;

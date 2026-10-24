@@ -105,6 +105,8 @@ struct GraphicContext {
 	void               LogMemoryBudget() const;
 	[[nodiscard]] bool CanReportMemoryUsage() const noexcept { return memory_budget_ext_enabled; }
 	[[nodiscard]] uint64_t GetDeviceMemoryUsage() const;
+	// Device memory usage less the free space inside allocator blocks, for cache eviction.
+	[[nodiscard]] uint64_t GetDeviceMemoryInUse() const;
 	[[nodiscard]] uint64_t GetTotalMemoryBudget() const;
 
 	struct HeapUsage {

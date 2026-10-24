@@ -2201,7 +2201,7 @@ void TextureCache::RunGarbageCollector() {
 	std::scoped_lock lock {m_lock};
 	const uint64_t   tick = m_gc_tick++;
 	if (m_graphics.CanReportMemoryUsage()) {
-		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
+		m_total_used_memory = m_graphics.GetDeviceMemoryInUse();
 	}
 	if (m_total_used_memory < m_trigger_gc_memory) {
 		return;
