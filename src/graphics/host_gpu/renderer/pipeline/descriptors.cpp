@@ -25,6 +25,7 @@
 #include "graphics/host_gpu/renderer/render.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 #include "graphics/host_gpu/vulkanCommon.h"
+#include "graphics/shader/recompiler/BufferFormat.h"
 #include "graphics/shader/recompiler/ir/ShaderIR.h"
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 #include "graphics/shader/shader.h"
@@ -845,6 +846,15 @@ void RenderExecutor::FindBuffers(std::span<PreparedBindings* const> stages) {
 				// OOB_SELECT=2 only tests NumRecords != 0; a zero-stride fetch
 				// still needs its full payload when NumRecords is smaller than it.
 				size = std::max(size, uint64_t {metadata.max_byte_extent});
+			}
+			if (size != 0 && metadata.formatted && descriptor.Stride() != 0) {
+				// Structured fetches are bounded by record, and a format wider than the stride
+				// still transfers its whole span for the last record, past NumRecords * Stride.
+				const uint64_t format_size =
+				    ShaderRecompiler::Format::GetFormatInfo(descriptor.Format()).byte_size;
+				if (format_size > descriptor.Stride()) {
+					size = Common::AlignUp(size + format_size - descriptor.Stride(), 4);
+				}
 			}
 			if (address == 0 || size == 0) {
 				source = {};
