@@ -2324,13 +2324,15 @@ void TextureCache::RunGarbageCollector() {
 			return ++seen == 64;
 		});
 		constexpr double GB = 1024.0 * 1024.0 * 1024.0;
-		::Log::WriteToConsoleAndLog(fmt::sprintf("GCSTATS time=%lld faults=%llu faultBatches=%llu tick=%llu usage=%.2f pressure=%.2f critical=%.2f plain=%zu/%.2f gmTiledSafe=%zu/%.2f "
+		::Log::WriteToConsoleAndLog(fmt::sprintf("GCSTATS time=%lld faults=%llu faultBatches=%llu tick=%llu drv=%.2f usage=%.2f pressure=%.2f critical=%.2f plain=%zu/%.2f gmTiledSafe=%zu/%.2f "
 		     "gmLinearSafe=%zu/%.2f gmUnsafe=%zu/%.2f heap=%zu/%.2f depth=%zu/%.2f "
 		     "tail64=[p%zu t%zu l%zu u%zu h%zu d%zu x%zu] evictions=%llu\n",
 		     static_cast<long long>(std::time(nullptr)),
 		     static_cast<unsigned long long>(g_debug_bda_faults.load()),
 		     static_cast<unsigned long long>(g_debug_bda_fault_batches.load()),
-		     static_cast<unsigned long long>(tick), static_cast<double>(m_total_used_memory) / GB,
+		     static_cast<unsigned long long>(tick),
+		     static_cast<double>(m_graphics.GetDeviceMemoryUsage()) / GB,
+		     static_cast<double>(m_total_used_memory) / GB,
 		     static_cast<double>(m_pressure_gc_memory) / GB,
 		     static_cast<double>(m_critical_gc_memory) / GB, stats[0].count,
 		     static_cast<double>(stats[0].bytes) / GB, stats[1].count,
