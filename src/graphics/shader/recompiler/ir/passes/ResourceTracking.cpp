@@ -1097,36 +1097,22 @@ private:
 		           : nullptr;
 	}
 
-	static bool IsMemoryInstruction(const Inst& inst) {
-		const auto op = inst.GetOpcode();
-		return BufferAccessOf(op) != BufferAccess::None ||
-		       AddressOpcodeInfoOf(op).access != AddressAccess::None ||
-		       ImageOpcodeInfoOf(op).access != ImageAccess::None;
-	}
-
-	// Descriptor planning neither adds nor removes memory instructions, so the users counted
-	// when it starts stay exact while it runs.
-	void CountMemoryIndexUsers() {
-		m_memory_index_users.assign(m_program.memory_info.size(), {});
+	bool MemoryIndexBelongsTo(uint32_t index, const Inst& owner) const {
 		for (const auto* block: m_program.blocks) {
 			for (const auto& inst: *block) {
-				if (!IsMemoryInstruction(inst)) {
+				const auto op = inst.GetOpcode();
+				if ((BufferAccessOf(op) == BufferAccess::None &&
+				     AddressOpcodeInfoOf(op).access == AddressAccess::None &&
+				     ImageOpcodeInfoOf(op).access == ImageAccess::None) ||
+				    &inst == &owner) {
 					continue;
 				}
-				const auto index = inst.Flags<MemoryFlags>().index;
-				if (index < m_memory_index_users.size() &&
-				    m_memory_index_users[index].count++ == 0u) {
-					m_memory_index_users[index].first = &inst;
+				if (inst.Flags<MemoryFlags>().index == index) {
+					return false;
 				}
 			}
 		}
-	}
-
-	// No memory instruction of the blocks other than `owner` uses `index`.
-	bool MemoryIndexBelongsTo(uint32_t index, const Inst& owner) const {
-		EXIT_IF(index >= m_memory_index_users.size());
-		const auto& users = m_memory_index_users[index];
-		return users.count == 0u || (users.count == 1u && users.first == &owner);
+		return true;
 	}
 
 	bool MakeRuntimeTableSource(const Inst& read, DescriptorSource& descriptor) {
@@ -3998,7 +3984,6 @@ private:
 	}
 
 	void PlanIndirectDescriptors() {
-		CountMemoryIndexUsers();
 		for (auto* block: m_program.blocks) {
 			for (auto& inst: *block) {
 				if ((ImageOpcodeInfoOf(inst.GetOpcode()).access == ImageAccess::None &&
@@ -4421,11 +4406,6 @@ private:
 	std::vector<IndirectDescriptorPlan>             m_indirect_descriptors;
 	std::map<const Inst*, Value>              m_descriptor_values;
 	bool                                       m_shader_writes = false;
-	struct MemoryIndexUsers {
-		uint32_t    count = 0;
-		const Inst* first = nullptr;
-	};
-	std::vector<MemoryIndexUsers> m_memory_index_users;
 };
 
 UniformFillPlan RecognizePatternFill(Program& program, const Decoder::Program& decoded,
