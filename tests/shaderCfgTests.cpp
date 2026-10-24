@@ -16350,6 +16350,8 @@ void TestSpirvRepeatedEmission() {
   IR::IREmitter emitter(compiled.program.blocks.front());
   const auto lane = emitter.Emit(IR::ValueOpcode::LaneId, {});
   const auto value = emitter.Emit(IR::ValueOpcode::IAdd32, {lane, IR::Value(1u)});
+  const auto first_cast = emitter.Emit(IR::ValueOpcode::BitCastF32U32, {value});
+  const auto same_cast = emitter.Emit(IR::ValueOpcode::BitCastF32U32, {value});
   const auto first = emitter.Emit(IR::ValueOpcode::ReadFirstLane,
                                   {value, IR::Value(true)});
   emitter.Emit(IR::ValueOpcode::IAdd32, {first, lane});
@@ -16357,6 +16359,8 @@ void TestSpirvRepeatedEmission() {
   IR::CollectShaderInfo(compiled.program, options.input_info);
   const auto binary = Spirv::EmitProgram(compiled.program, options.input_info);
   CheckSpirvBinaryValidates(binary);
+  Check(first_cast.TryInstruction()->Definition(0) == same_cast.TryInstruction()->Definition(0),
+        "identical bitcasts in one SPIR-V block did not share their result");
   Check((DisassembleSpirvBinary(binary).find("BuiltIn SubgroupLocalInvocationId") != std::string::npos),
         "collection missed the subgroup requirement of the added IR");
   Check(Spirv::EmitProgram(compiled.program, options.input_info) == binary,

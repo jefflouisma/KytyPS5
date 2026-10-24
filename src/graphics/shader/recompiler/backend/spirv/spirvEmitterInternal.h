@@ -117,6 +117,7 @@ struct EmitterState {
 	uint32_t                                         bda_pointer_function    = 0;
 	std::array<uint32_t, 2>                          bda_load_functions {};
 	std::map<std::array<uint32_t, 4>, uint32_t>        guest_address_bases;
+	std::map<std::pair<uint32_t, uint32_t>, uint32_t> bitcasts;
 	uint32_t                                         indirect_format_function = 0;
 	uint32_t                                         indirect_format_geometry_function = 0;
 	std::map<std::array<uint32_t, 3>, uint32_t>        indirect_buffer_load_functions;
@@ -189,6 +190,7 @@ uint32_t TypeU32ElementPointer(EmitterState& state, spv::StorageClass storage_cl
 inline void EmitLabel(EmitterState& state, uint32_t label) {
 	state.current_label = label;
 	state.guest_address_bases.clear();
+	state.bitcasts.clear();
 	state.builder.AddFunction(spv::OpLabel, label);
 	if (state.debug_source != 0 && state.current_block != nullptr) {
 		// Source lines encode the containing native block's byte offset plus one.
@@ -199,9 +201,21 @@ inline void EmitLabel(EmitterState& state, uint32_t label) {
 
 uint32_t TypeId(EmitterState& state, IR::Type type);
 
+inline uint32_t EmitBitcast(EmitterState& state, uint32_t type, uint32_t value) {
+	auto [cached, inserted] = state.bitcasts.try_emplace(std::pair {type, value}, 0u);
+	if (inserted) {
+		cached->second = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpBitcast, type, cached->second, value);
+	}
+	return cached->second;
+}
+
 // Shared instruction construction; typed aliases add no forwarding functions.
 template <spv::Op opcode, IR::Type type, typename... Args>
 uint32_t EmitNative(EmitterState& state, Args... args) {
+	if constexpr (opcode == spv::OpBitcast) {
+		return EmitBitcast(state, TypeId(state, type), args...);
+	}
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(opcode, TypeId(state, type), result, args...);
 	if constexpr (type == IR::Type::F64 &&
@@ -219,6 +233,7 @@ uint32_t EmitGlsl(EmitterState& state, Args... args) {
 }
 
 inline uint32_t Unary(EmitterState& state, spv::Op opcode, uint32_t type, uint32_t value) {
+	if (opcode == spv::OpBitcast) return EmitBitcast(state, type, value);
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(opcode, type, result, value);
 	return result;
