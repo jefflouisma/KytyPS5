@@ -24,6 +24,8 @@
 #include "loader/systemContent.h"
 
 #include <algorithm>
+#include <unordered_map>
+#include <cstdlib>
 #include <array>
 #include <atomic>
 #include <cctype>
@@ -39,6 +41,7 @@
 #include <optional>
 #include <span>
 #include <spirv-tools/libspirv.hpp>
+#include <spirv-tools/optimizer.hpp>
 #include <stop_token>
 #include <string_view>
 #include <thread>
@@ -176,6 +179,34 @@ void DumpShaderOriginal(const char* stage_name, uint64_t shader_hash,
 		return;
 	}
 	file.Write(code.data(), code.size_bytes());
+}
+
+// DEBUG ONLY: shader sizes for the slow pipeline report.
+struct DebugModuleInfo {
+	uint32_t words = 0, optimized_words = 0, opt_us = 0;
+};
+std::mutex                                               g_debug_module_mutex;
+std::unordered_map<VkShaderModule, DebugModuleInfo>      g_debug_modules;
+
+bool DebugSpirvOptEnabled() {
+	static const bool enabled = std::getenv("PS5PLUS_SPIRV_OPT") != nullptr;
+	return enabled;
+}
+
+void DebugRecordModule(vk::ShaderModule module, uint32_t words, uint32_t optimized_words,
+                       uint32_t opt_us) {
+	std::lock_guard lock(g_debug_module_mutex);
+	g_debug_modules[static_cast<VkShaderModule>(module)] = {words, optimized_words, opt_us};
+}
+
+std::string DebugModuleText(vk::ShaderModule module) {
+	std::lock_guard lock(g_debug_module_mutex);
+	const auto      iter = g_debug_modules.find(static_cast<VkShaderModule>(module));
+	if (iter == g_debug_modules.end()) {
+		return "?";
+	}
+	return fmt::format("{}/{}w/{}us", iter->second.words, iter->second.optimized_words,
+	                   iter->second.opt_us);
 }
 
 bool ValidateShaderSpirv(const char* label, uint64_t shader_hash,
@@ -420,8 +451,32 @@ struct PipelineCache::ProgramCache {
 		}
 		DumpShaderSpirv(stage_name, options.shader_hash, result.spirv);
 
+		// DEBUG ONLY: PS5PLUS_SPIRV_OPT runs the SPIRV-Tools performance passes before the driver
+		// sees the module; sizes are kept to report slow pipeline compiles.
+		const auto words_before = static_cast<uint32_t>(result.spirv.size());
+		uint32_t   opt_us       = 0;
+		if (DebugSpirvOptEnabled()) {
+			const auto start = std::chrono::steady_clock::now();
+			spvtools::Optimizer optimizer(SPV_ENV_VULKAN_1_3);
+			optimizer.RegisterPerformancePasses();
+			std::vector<uint32_t> optimized;
+			spvtools::ValidatorOptions validator_options;
+			validator_options.SetAllowOffsetTextureOperand(options.profile->maintenance8);
+			spvtools::OptimizerOptions optimizer_options;
+			optimizer_options.set_validator_options(validator_options);
+			optimizer_options.set_run_validator(false);
+			if (optimizer.Run(result.spirv.data(), result.spirv.size(), &optimized,
+			                  optimizer_options)) {
+				result.spirv = std::move(optimized);
+			}
+			opt_us = static_cast<uint32_t>(std::chrono::duration_cast<std::chrono::microseconds>(
+			                                   std::chrono::steady_clock::now() - start)
+			                                   .count());
+		}
+
 		const auto module = CompileSPV(result.spirv, graphics.device);
 		EXIT_IF(module == nullptr);
+		DebugRecordModule(module, words_before, static_cast<uint32_t>(result.spirv.size()), opt_us);
 		if (options.dump_ir) {
 			LOGF("%s SPIR-V words=%" PRIu64 " wave_size=%u\n", options.dump_label,
 			     static_cast<uint64_t>(result.spirv.size()), options.wave_size);
@@ -1531,8 +1586,21 @@ PipelineCache::Pipeline& PipelineCache::GetGraphicsPipeline(
 		Common::DebugCounters::ScopedTimer timer(Common::DebugCounters::Counter::PipelinesCreated,
 		                                         Common::DebugCounters::Counter::PipelineCreateNs,
 		                                         Common::DebugCounters::Peak::PipelineCreateNs);
+		const auto start = std::chrono::steady_clock::now();
 		CreatePipelineInternal(m_graphics, *cached, rendering, key.vertex_input, vertex_info,
 		                       ps_input_info, programs, static_params, m_driver_cache);
+		const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		                    std::chrono::steady_clock::now() - start)
+		                    .count();
+		if (ms >= 300) {
+			::Log::WriteToConsoleAndLog(fmt::format(
+			    "SLOWPIPE graphics ms={} stages={} vs={} hs={} es={} ps={} opt={}\n", ms,
+			    programs.VertexStageCount(), DebugModuleText(programs.vertex[0].module),
+			    programs.vertex[1] ? DebugModuleText(programs.vertex[1].module) : "-",
+			    programs.vertex[2] ? DebugModuleText(programs.vertex[2].module) : "-",
+			    programs.pixel ? DebugModuleText(programs.pixel.module) : "-",
+			    DebugSpirvOptEnabled() ? 1 : 0));
+		}
 	}
 	LogPipelineTrace("CreatePipelineInternal done", vs_id, ps_id);
 
@@ -1567,8 +1635,17 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 		Common::DebugCounters::ScopedTimer timer(Common::DebugCounters::Counter::PipelinesCreated,
 		                                         Common::DebugCounters::Counter::PipelineCreateNs,
 		                                         Common::DebugCounters::Peak::PipelineCreateNs);
+		const auto start = std::chrono::steady_clock::now();
 		CreatePipelineInternal(m_graphics, *cached, input_info, compute_program.module,
 		                       m_driver_cache);
+		const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		                    std::chrono::steady_clock::now() - start)
+		                    .count();
+		if (ms >= 300) {
+			::Log::WriteToConsoleAndLog(fmt::format("SLOWPIPE compute ms={} cs={} opt={}\n", ms,
+			                                        DebugModuleText(compute_program.module),
+			                                        DebugSpirvOptEnabled() ? 1 : 0));
+		}
 	}
 
 	EXIT_NOT_IMPLEMENTED(cached->pipeline == nullptr);
