@@ -760,6 +760,7 @@ void EmitProgram(EmitterState& state) {
 		EmitMeshEntryPoint(state);
 	}
 	DefineBdaLoads(state);
+	DefineMinMaxF32Functions(state);
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter

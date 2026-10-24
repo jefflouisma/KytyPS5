@@ -16381,6 +16381,32 @@ void TestSpirvRepeatedEmission() {
         "split-wave re-emission retained native-wave definitions");
 }
 
+void TestSpirvSharedMinMax() {
+  using namespace ShaderRecompiler;
+  const uint32_t shader[] = {EncodeSopp(0x01)};
+  auto options = MakeCompileOptions(ShaderType::Compute);
+  auto compiled = RecompileForTest(shader, options);
+  IR::IREmitter emitter(compiled.program.blocks.front());
+  const auto lane = emitter.Emit(IR::ValueOpcode::LaneId, {});
+  const auto value = emitter.Emit(IR::ValueOpcode::BitCastF32U32, {lane});
+  for (const auto op : {IR::ValueOpcode::FPMin32, IR::ValueOpcode::FPMax32})
+    for (int repeat = 0; repeat < 2; ++repeat)
+      emitter.Emit(op, {value, IR::Value::F32(0.0f)});
+  compiled.program.shader_info_complete = false;
+  IR::CollectShaderInfo(compiled.program, options.input_info);
+  const auto shared = Spirv::EmitProgram(compiled.program, options.input_info);
+  CheckSpirvBinaryValidates(shared);
+  Check(SpirvInstructionOpcodeCount(shared, spv::OpFunction) == 3u &&
+            SpirvInstructionOpcodeCount(shared, spv::OpFunctionCall) == 4u,
+        "repeated guest min/max operations did not share one body per operation");
+  const Spirv::Profile native{.native_float_min_max = true};
+  const auto fast = Spirv::EmitProgram(compiled.program, options.input_info, 0, native);
+  CheckSpirvBinaryValidates(fast);
+  Check(SpirvInstructionOpcodeCount(fast, spv::OpFunction) == 1u &&
+            SpirvInstructionOpcodeCount(fast, spv::OpFunctionCall) == 0u,
+        "native min/max unexpectedly emitted guest emulation helpers");
+}
+
 void TestSpirvConditionVotes() {
   using namespace ShaderRecompiler;
   using K = CFG::BranchCondition;
@@ -16784,6 +16810,7 @@ int main() {
   TestCompilerStageInputOwnership();
   TestSpirvRepeatedEmission();
   TestSpirvConditionVotes();
+  TestSpirvSharedMinMax();
   TestRepeatedExportsHaveOneInterface();
   TestNewShaderRecompilerSpirvSizeBaselines();
   TestDemandDrivenSpirvDeclarations();

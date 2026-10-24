@@ -119,8 +119,32 @@ uint32_t EmitMinMaxF32Value(EmitterState& state, uint32_t lhs, uint32_t rhs, boo
 		                          max_value ? GLSLstd450NMax : GLSLstd450NMin, lhs, rhs);
 		return result;
 	}
-	return EmitMinMaxF32(state, lhs, rhs, EmitBitcastF32ToU32(state, lhs),
-	                     EmitBitcastF32ToU32(state, rhs), max_value);
+	auto& function = state.min_max_f32_functions[max_value ? 1u : 0u];
+	if (function == 0u) function = state.builder.AllocateId();
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpFunctionCall, TypeF32(state), result, function, lhs, rhs);
+	return result;
+}
+
+void DefineMinMaxF32Functions(EmitterState& state) {
+	for (size_t maximum = 0; maximum < state.min_max_f32_functions.size(); ++maximum) {
+		const auto function = state.min_max_f32_functions[maximum];
+		if (function == 0u) continue;
+		const auto type = TypeF32(state);
+		const auto signature = state.builder.Type(spv::OpTypeFunction, type, type, type);
+		const auto lhs = state.builder.AllocateId();
+		const auto rhs = state.builder.AllocateId();
+		state.builder.AddName(function, maximum ? "guest_max_f32" : "guest_min_f32");
+		state.builder.AddFunction(spv::OpFunction, type, function, spv::FunctionControlMaskNone,
+		                          signature);
+		state.builder.AddFunction(spv::OpFunctionParameter, type, lhs);
+		state.builder.AddFunction(spv::OpFunctionParameter, type, rhs);
+		EmitLabel(state, state.builder.AllocateId());
+		const auto result = EmitMinMaxF32(state, lhs, rhs, EmitBitcastF32ToU32(state, lhs),
+		                                 EmitBitcastF32ToU32(state, rhs), maximum != 0u);
+		state.builder.AddFunction(spv::OpReturnValue, result);
+		state.builder.AddFunction(spv::OpFunctionEnd);
+	}
 }
 
 uint32_t EmitFPMedTri32(EmitterState& state, uint32_t a, uint32_t b, uint32_t c) {
