@@ -119,6 +119,9 @@ uint32_t EmitMinMaxF32Value(EmitterState& state, uint32_t lhs, uint32_t rhs, boo
 		                          max_value ? GLSLstd450NMax : GLSLstd450NMin, lhs, rhs);
 		return result;
 	}
+	if (SpirvSizeOff("minmax"))
+		return EmitMinMaxF32(state, lhs, rhs, EmitBitcastF32ToU32(state, lhs),
+		                     EmitBitcastF32ToU32(state, rhs), max_value);
 	auto& function = state.min_max_f32_functions[max_value ? 1u : 0u];
 	if (function == 0u) function = state.builder.AllocateId();
 	const auto result = state.builder.AllocateId();
@@ -211,6 +214,7 @@ static uint32_t EmitF16BitsToF32Body(EmitterState& state, uint32_t bits) {
 }
 
 uint32_t EmitF16BitsToF32(EmitterState& state, uint32_t bits) {
+	if (SpirvSizeOff("f16")) return EmitF16BitsToF32Body(state, bits);
 	if (state.f16_to_f32_function == 0u) state.f16_to_f32_function = state.builder.AllocateId();
 	const auto result = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpFunctionCall, TypeF32(state), result,

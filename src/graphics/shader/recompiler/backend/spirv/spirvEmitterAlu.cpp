@@ -93,6 +93,7 @@ uint32_t EmitF32ToF16RtzBitsBody(EmitterState& state, uint32_t value) {
 }
 
 uint32_t EmitF32ToF16RtzBits(EmitterState& state, uint32_t value) {
+	if (SpirvSizeOff("rtz")) return EmitF32ToF16RtzBitsBody(state, value);
 	if (state.f32_to_f16_rtz_function == 0u)
 		state.f32_to_f16_rtz_function = state.builder.AllocateId();
 	const auto result = state.builder.AllocateId();

@@ -39,6 +39,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <span>
 #include <spirv-tools/libspirv.hpp>
 #include <spirv-tools/optimizer.hpp>
@@ -932,6 +933,65 @@ struct PipelineCache::ProgramCache {
 		                 snapshot.size(), data.size(), Common::PathToString(cache_path));
 	}
 
+	// DEBUG ONLY: times compute pipeline creation, without a driver cache, for each distinct
+	// recorded compute program of at least min_words guest dwords in the cache file at path.
+	void BenchCompute(const std::filesystem::path& path, uint32_t min_words) {
+		std::vector<uint8_t> data;
+		ShaderCacheRecipes   loaded;
+		if (!ReadShaderCacheFile(path, data)) {
+			::Log::WriteToConsoleAndLog("BENCH cannot read the shader cache\n");
+			std::_Exit(1);
+		}
+		const auto newline = std::find(data.begin(), data.end(), static_cast<uint8_t>('\n'));
+		const std::string signature(data.begin(), newline == data.end() ? newline : newline + 1);
+		ParseShaderCache(data, signature, loaded, nullptr);
+		ShaderRecompiler::IR::ResourceSnapshot  snapshot;
+		std::set<std::pair<uint64_t, uint32_t>> seen;
+		double                                  total = 0;
+		uint32_t                                count = 0;
+		for (const auto& recipe: loaded) {
+			if (recipe->stage != ShaderType::Compute) {
+				continue;
+			}
+			std::optional<ShaderRecompiler::IR::ResourcePlan> plan;
+			auto permutation = CompileRecipe<ShaderComputeInputInfo>(*recipe, plan);
+			if (!permutation) {
+				continue;
+			}
+			const auto module = permutation->handle.module;
+			uint32_t   words  = 0;
+			{
+				std::lock_guard lock(g_debug_module_mutex);
+				words = g_debug_modules[static_cast<VkShaderModule>(module)].words;
+			}
+			if (recipe->code.size() < min_words || !seen.emplace(recipe->hash, 0u).second) {
+				graphics.device.destroyShaderModule(module, nullptr);
+				continue;
+			}
+			ShaderComputeInputInfo info;
+			EXIT_IF(!DecodeShaderCacheInput(recipe->input, info));
+			info.stage = {.program = &permutation->program, .resources = &snapshot};
+			PipelineCache::Pipeline pipeline;
+			const auto              start = std::chrono::steady_clock::now();
+			CreatePipelineInternal(graphics, pipeline, info, module, nullptr);
+			const auto ms = std::chrono::duration<double, std::milli>(
+			                    std::chrono::steady_clock::now() - start)
+			                    .count();
+			::Log::WriteToConsoleAndLog(fmt::format("BENCH compute hash={:016x} guest={} words={} ms={:.1f}\n",
+			                                        recipe->hash, recipe->code.size(), words, ms));
+			total += ms;
+			count++;
+			graphics.device.destroyPipeline(pipeline.pipeline, nullptr);
+			graphics.device.destroyPipelineLayout(pipeline.pipeline_layout, nullptr);
+			graphics.device.destroyDescriptorSetLayout(pipeline.descriptor_set_layout, nullptr);
+			graphics.device.destroyShaderModule(module, nullptr);
+		}
+		::Log::WriteToConsoleAndLog(
+		    fmt::format("BENCH done compute={} total_ms={:.0f}\n", count, total));
+		std::fflush(nullptr);
+		std::_Exit(0);
+	}
+
 	void WaitForBackgroundCompilation() {
 		std::unique_lock lock(job_mutex);
 		const auto       finished = [this] { return queue.empty() && running == 0; };
@@ -1621,6 +1681,11 @@ PipelineCache::GetComputePipeline(const ShaderComputeInputInfo& input_info,
 
 	EXIT_IF(!compute_program);
 
+	// DEBUG ONLY: PS5PLUS_COMPUTE_BENCH=CACHE_FILE [PS5PLUS_COMPUTE_BENCH_MIN=WORDS] benches and exits.
+	if (const char* bench = std::getenv("PS5PLUS_COMPUTE_BENCH")) {
+		const char* min = std::getenv("PS5PLUS_COMPUTE_BENCH_MIN");
+		m_program_cache->BenchCompute(bench, min ? static_cast<uint32_t>(std::strtoul(min, nullptr, 10)) : 0u);
+	}
 	if (auto iter = m_compute_pipelines.find(compute_program.id);
 	    iter != m_compute_pipelines.end()) {
 		return *iter->second;

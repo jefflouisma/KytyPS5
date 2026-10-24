@@ -10,6 +10,8 @@
 #include "graphics/shader/recompiler/ir/passes/ResourceMaterialization.h"
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstring>
 #include <array>
 #include <cinttypes>
 #include <cmath>
@@ -190,6 +192,12 @@ uint32_t TypePushConstantElementPointer(EmitterState& state);
 uint32_t TypeU32ArrayPointer(EmitterState& state, spv::StorageClass storage_class, uint32_t dwords);
 uint32_t TypeU32ElementPointer(EmitterState& state, spv::StorageClass storage_class);
 
+// DEBUG ONLY: PS5PLUS_SPIRV_OFF=bda,addr,bitcast,minmax,f16,rtz turns size reductions off.
+inline bool SpirvSizeOff(const char* name) {
+	static const char* off = std::getenv("PS5PLUS_SPIRV_OFF");
+	return off != nullptr && std::strstr(off, name) != nullptr;
+}
+
 inline void EmitLabel(EmitterState& state, uint32_t label) {
 	state.current_label = label;
 	state.guest_address_bases.clear();
@@ -205,6 +213,11 @@ inline void EmitLabel(EmitterState& state, uint32_t label) {
 uint32_t TypeId(EmitterState& state, IR::Type type);
 
 inline uint32_t EmitBitcast(EmitterState& state, uint32_t type, uint32_t value) {
+	if (SpirvSizeOff("bitcast")) {
+		const auto result = state.builder.AllocateId();
+		state.builder.AddFunction(spv::OpBitcast, type, result, value);
+		return result;
+	}
 	auto [cached, inserted] = state.bitcasts.try_emplace(std::pair {type, value}, 0u);
 	if (inserted) {
 		cached->second = state.builder.AllocateId();

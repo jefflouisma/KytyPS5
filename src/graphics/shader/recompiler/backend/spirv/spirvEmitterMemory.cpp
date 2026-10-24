@@ -147,6 +147,7 @@ uint32_t GuestAddress(ValueEmitContext& ctx, const IR::Inst& inst, const IR::Mem
 	// only their pure address arithmetic, within this SPIR-V block's dominance scope.
 	const std::array key {base_low, base_high, mem.address_is_full ? 0u : low,
 	                      uint32_t(scalar) | (uint32_t(mem.address_is_full) << 1u)};
+	if (SpirvSizeOff("addr")) state.guest_address_bases.clear();
 	auto [cached, inserted] = state.guest_address_bases.try_emplace(key, 0u);
 	if (inserted) {
 		const auto align = [&](uint32_t value) {
@@ -252,6 +253,7 @@ uint32_t LoadBdaDwordBody(EmitterState& state, uint32_t address, bool coherent) 
 
 uint32_t LoadBdaDword(ValueEmitContext& ctx, uint32_t address, bool coherent = false) {
 	auto& state = ctx.state;
+	if (SpirvSizeOff("bda")) return LoadBdaDwordBody(state, address, coherent);
 	auto& function = state.bda_load_functions[coherent ? 1u : 0u];
 	if (function == 0u) function = state.builder.AllocateId();
 	const auto result = state.builder.AllocateId();
