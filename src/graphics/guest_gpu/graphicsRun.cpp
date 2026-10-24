@@ -25,6 +25,8 @@
 #include <array>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
+#include <ctime>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -944,7 +946,16 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 	// the records' offsets only through those SGPRs; Vulkan applies them, which matches
 	// while they are zero.
 	const DrawIndirectArgs records {args_addr, draw_count, stride_in_bytes};
-	if (registers.vertex_offset == Pm4::SH_NOP && registers.instance_offset == Pm4::SH_NOP &&
+	// DEBUG ONLY: PS5PLUS_CPU_INDIRECT reads every record on the CPU; PS5PLUS_ZERO_OFFSETS drops
+	// record offsets that no SGPR receives, as the hardware does.
+	static const bool debug_cpu_indirect = std::getenv("PS5PLUS_CPU_INDIRECT") != nullptr;
+	static const bool debug_zero_offsets = std::getenv("PS5PLUS_ZERO_OFFSETS") != nullptr;
+	static std::atomic<uint64_t> debug_records {0}, debug_vertex {0}, debug_instance {0};
+	const bool no_destination = registers.vertex_offset == Pm4::SH_NOP &&
+	                            registers.instance_offset == Pm4::SH_NOP &&
+	                            registers.index_offset == Pm4::SH_NOP;
+	if (!debug_cpu_indirect && registers.vertex_offset == Pm4::SH_NOP &&
+	    registers.instance_offset == Pm4::SH_NOP &&
 	    registers.index_offset == Pm4::SH_NOP && (!indexed || m_index_buffer_size != 0) &&
 	    (indexed ? executor.DrawIndex(m_submit_id, CurrentBuffer(),
 	                                  {.index_count         = m_index_buffer_size,
@@ -959,19 +970,40 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		const auto addr = args_addr + static_cast<uint64_t>(i) * stride_in_bytes;
 		if (!indexed) {
 			const auto& args = *reinterpret_cast<const vk::DrawIndirectCommand*>(addr);
-			PatchIndirectDrawOffsets(*this, registers, args.firstVertex, args.firstInstance, 0);
+			uint32_t first_vertex = args.firstVertex, first_instance = args.firstInstance;
+			if (no_destination) {
+				debug_records++;
+				debug_vertex += first_vertex != 0 ? 1 : 0;
+				debug_instance += first_instance != 0 ? 1 : 0;
+				if (debug_zero_offsets) {
+					first_vertex   = 0;
+					first_instance = 0;
+				}
+			}
+			PatchIndirectDrawOffsets(*this, registers, first_vertex, first_instance, 0);
 			executor.DrawAuto(m_submit_id, CurrentBuffer(),
 			                  {.vertex_count   = args.vertexCount,
 			                   .instance_count = args.instanceCount,
-			                   .first_vertex   = args.firstVertex,
-			                   .first_instance = args.firstInstance,
+			                   .first_vertex   = first_vertex,
+			                   .first_instance = first_instance,
 			                   .offset_source  = DrawOffsetSource::IndirectArgs});
 			continue;
 		}
 
 		const auto& args = *reinterpret_cast<const vk::DrawIndexedIndirectCommand*>(addr);
-		PatchIndirectDrawOffsets(*this, registers, static_cast<uint32_t>(args.vertexOffset),
-		                         args.firstInstance, args.firstIndex);
+		int32_t  vertex_offset  = args.vertexOffset;
+		uint32_t first_instance = args.firstInstance;
+		if (no_destination) {
+			debug_records++;
+			debug_vertex += vertex_offset != 0 ? 1 : 0;
+			debug_instance += first_instance != 0 ? 1 : 0;
+			if (debug_zero_offsets) {
+				vertex_offset  = 0;
+				first_instance = 0;
+			}
+		}
+		PatchIndirectDrawOffsets(*this, registers, static_cast<uint32_t>(vertex_offset),
+		                         first_instance, args.firstIndex);
 		// Indices past INDEX_BUFFER_SIZE read as zero; a size of 0 leaves them unbounded.
 		const auto first       = args.firstIndex;
 		const auto index_limit = m_index_buffer_size == 0      ? UINT32_MAX
@@ -982,10 +1014,18 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 		                    .index_addr          = IndexAddress(args.firstIndex),
 		                    .instance_count      = args.instanceCount,
 		                    .index_type_and_size = m_index_type_and_size,
-		                    .base_vertex         = args.vertexOffset,
-		                    .first_instance      = args.firstInstance,
+		                    .base_vertex         = vertex_offset,
+		                    .first_instance      = first_instance,
 		                    .offset_source       = DrawOffsetSource::IndirectArgs,
 		                    .index_limit         = index_limit});
+	}
+	if (no_destination && debug_records.load() / 20000 != (debug_records.load() - draw_count) / 20000) {
+		::Log::WriteToConsoleAndLog(fmt::sprintf(
+		    "OFFSETS time=%lld records=%llu nonzeroVertex=%llu nonzeroInstance=%llu zeroing=%d\n",
+		    static_cast<long long>(std::time(nullptr)),
+		    static_cast<unsigned long long>(debug_records.load()),
+		    static_cast<unsigned long long>(debug_vertex.load()),
+		    static_cast<unsigned long long>(debug_instance.load()), debug_zero_offsets ? 1 : 0));
 	}
 }
 
