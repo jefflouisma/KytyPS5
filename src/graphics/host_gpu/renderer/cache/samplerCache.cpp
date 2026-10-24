@@ -3,23 +3,82 @@
 #include "common/assert.h"
 #include "common/logging/log.h"
 #include "graphics/guest_gpu/gpu_defs.h"
+#include "graphics/host_gpu/renderer/masterSemaphore.h"
 #include "graphics/host_gpu/renderer/renderContext.h"
 
+#include <algorithm>
+#include <utility>
+#include <vector>
+
 namespace Libs::Graphics {
+namespace {
+
+// Samplers created outside the cache, such as the overlay's, also count against the device limit.
+constexpr size_t SamplerLimitReserve = 64;
+
+} // namespace
 
 SamplerCache::~SamplerCache() {
-	for (const auto& [key, sampler]: m_samplers) {
+	for (const auto& [key, entry]: m_samplers) {
 		(void)key;
-		m_graphics.device.destroySampler(sampler, nullptr);
+		m_graphics.device.destroySampler(entry.sampler, nullptr);
 	}
+}
+
+// The device limits live samplers (maxSamplerAllocationCount is 4000 on NVIDIA), but a game can
+// name far more distinct sampler descriptors over a session, for example by moving LOD bias with
+// its dynamic resolution. Destroy the least recently used quarter once the GPU is done with it.
+void SamplerCache::Reclaim() {
+	const uint64_t current = m_master_semaphore.CurrentTick();
+
+	std::vector<std::pair<uint64_t, SamplerKey>> victims;
+	victims.reserve(m_samplers.size());
+	for (const auto& [key, entry]: m_samplers) {
+		// Samplers used by the command buffer being recorded cannot be waited for yet.
+		if (entry.last_tick < current) {
+			victims.emplace_back(entry.last_tick, key);
+		}
+	}
+	const size_t count = std::min(victims.size(), std::max<size_t>(m_samplers.size() / 4, 1));
+	if (count == 0) {
+		return;
+	}
+	std::ranges::nth_element(victims, victims.begin() + static_cast<std::ptrdiff_t>(count - 1));
+	victims.resize(count);
+
+	uint64_t newest = 0;
+	for (const auto& [tick, key]: victims) {
+		newest = std::max(newest, tick);
+	}
+	m_master_semaphore.Wait(newest);
+
+	for (const auto& [tick, key]: victims) {
+		(void)tick;
+		auto iter = m_samplers.find(key);
+		m_graphics.device.destroySampler(iter->second.sampler, nullptr);
+		m_samplers.erase(iter);
+	}
+	LOGF("SamplerCache: destroyed %zu least recently used samplers, %zu remain\n", count,
+	     m_samplers.size());
 }
 
 vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool integer_border) {
 	Common::LockGuard lock(m_mutex);
 
 	const SamplerKey key {r.fields[0], r.fields[1], r.fields[2], r.fields[3], integer_border};
+	const uint64_t   tick = m_master_semaphore.CurrentTick();
 	if (auto iter = m_samplers.find(key); iter != m_samplers.end()) {
-		return iter->second;
+		iter->second.last_tick = tick;
+		return iter->second.sampler;
+	}
+
+	if (m_capacity == 0) {
+		const size_t limit =
+		    m_graphics.GetPhysicalDeviceProperties().limits.maxSamplerAllocationCount;
+		m_capacity = std::max(limit, 2 * SamplerLimitReserve) - SamplerLimitReserve;
+	}
+	if (m_samplers.size() >= m_capacity) {
+		Reclaim();
 	}
 
 	float      aniso_ratio = 1.0f;
@@ -154,7 +213,7 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
 	const auto  result     = m_graphics.device.createSampler(&sampler_info, nullptr, &vk_sampler);
 	EXIT_NOT_IMPLEMENTED(result != vk::Result::eSuccess || vk_sampler == nullptr);
 
-	m_samplers.emplace(key, vk_sampler);
+	m_samplers.emplace(key, Entry {vk_sampler, tick});
 	return vk_sampler;
 }
 

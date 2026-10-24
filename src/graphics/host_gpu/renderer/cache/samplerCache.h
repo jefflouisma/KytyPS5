@@ -15,10 +15,12 @@
 namespace Libs::Graphics {
 
 struct GraphicContext;
+class MasterSemaphore;
 
 class SamplerCache {
 public:
-	explicit SamplerCache(GraphicContext& graphics): m_graphics(graphics) {
+	SamplerCache(GraphicContext& graphics, MasterSemaphore& master_semaphore)
+	    : m_graphics(graphics), m_master_semaphore(master_semaphore) {
 		EXIT_NOT_IMPLEMENTED(!Common::Thread::IsMainThread());
 	}
 	~SamplerCache();
@@ -28,6 +30,13 @@ public:
 
 private:
 	using SamplerKey = std::array<uint32_t, 5>;
+
+	struct Entry {
+		vk::Sampler sampler   = nullptr;
+		uint64_t    last_tick = 0;
+	};
+
+	void Reclaim();
 
 	struct SamplerKeyHash {
 		std::size_t operator()(const SamplerKey& key) const {
@@ -41,9 +50,11 @@ private:
 		}
 	};
 
-	GraphicContext&                                             m_graphics;
-	Common::Mutex                                               m_mutex;
-	std::unordered_map<SamplerKey, vk::Sampler, SamplerKeyHash> m_samplers;
+	GraphicContext&                                       m_graphics;
+	MasterSemaphore&                                      m_master_semaphore;
+	Common::Mutex                                         m_mutex;
+	std::unordered_map<SamplerKey, Entry, SamplerKeyHash> m_samplers;
+	size_t                                                m_capacity = 0;
 };
 
 } // namespace Libs::Graphics
