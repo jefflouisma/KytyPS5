@@ -116,6 +116,7 @@ struct EmitterState {
 	uint32_t                                         fault_buffer_variable   = 0;
 	uint32_t                                         bda_pointer_function    = 0;
 	std::array<uint32_t, 2>                          bda_load_functions {};
+	std::map<std::array<uint32_t, 4>, uint32_t>        guest_address_bases;
 	uint32_t                                         indirect_format_function = 0;
 	uint32_t                                         indirect_format_geometry_function = 0;
 	std::map<std::array<uint32_t, 3>, uint32_t>        indirect_buffer_load_functions;
@@ -187,6 +188,7 @@ uint32_t TypeU32ElementPointer(EmitterState& state, spv::StorageClass storage_cl
 
 inline void EmitLabel(EmitterState& state, uint32_t label) {
 	state.current_label = label;
+	state.guest_address_bases.clear();
 	state.builder.AddFunction(spv::OpLabel, label);
 	if (state.debug_source != 0 && state.current_block != nullptr) {
 		// Source lines encode the containing native block's byte offset plus one.
