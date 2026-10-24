@@ -658,8 +658,24 @@ struct PreparedIndexBuffer {
 
 static uint64_t VertexBufferDescriptorSize(int binding, const ShaderVertexInputInfo& info) {
 	const auto& buffer = info.buffers[binding];
-	if (buffer.stride != 0 || buffer.num_records == 0) {
-		return static_cast<uint64_t>(buffer.stride) * buffer.num_records;
+	if (buffer.num_records == 0) {
+		return 0;
+	}
+	if (buffer.stride != 0) {
+		// Fetches are bounded by record, but an attribute of the last record can end past
+		// NumRecords * Stride, and Vulkan checks each attribute against the binding size.
+		uint64_t record_extent = buffer.stride;
+		for (int i = 0; i < info.resources_num; i++) {
+			if (info.resources_dst[i].buffer_index != binding) {
+				continue;
+			}
+			const auto& resource = info.resources[i];
+			record_extent        = std::max(
+                record_extent,
+                resource.Base48() - buffer.addr +
+                    ShaderRecompiler::Format::GetFormatInfo(resource.Format()).byte_size);
+		}
+		return static_cast<uint64_t>(buffer.stride) * (buffer.num_records - 1) + record_extent;
 	}
 
 	uint64_t size = 0;
