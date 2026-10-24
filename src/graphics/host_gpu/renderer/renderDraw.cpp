@@ -1438,6 +1438,19 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			for (const auto& b: vb.buffer_sources) {
 				resources += fmt::format(" b{:x}:{:x}", b.address, b.size);
 			}
+			if (const auto* snap = state.vertex_info[0].stage.resources; snap != nullptr) {
+				resources += " ud:";
+				for (size_t i = 0; i < snap->user_data.size() && i < 20; i++) {
+					resources += fmt::format("{:x},", snap->user_data[i]);
+				}
+				for (const auto& d: snap->buffers) {
+					if (d.dword_count >= 4) {
+						ShaderBufferResource r;
+						std::memcpy(r.fields, d.dwords.data(), sizeof(r.fields));
+						resources += fmt::format(" V#{:x}/n{:x}/s{:x}", r.Base48(), r.NumRecords(), r.Stride());
+					}
+				}
+			}
 			for (const auto& t: vb.images) {
 				resources += fmt::format(" t{}:{:x}:{}x{}", t.image_id ? 1 : 0, t.desc.info.data.address,
 				                         t.desc.info.extent.width, t.desc.info.extent.height);
