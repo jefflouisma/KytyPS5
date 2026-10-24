@@ -29,6 +29,7 @@
 #include "graphics/shader/shader.h"
 #include "kernel/eventQueue.h"
 #include "kernel/memory.h"
+#include "graphics/host_gpu/hostMemory.h"
 #include "kernel/pthread.h"
 #include "libs/errno.h"
 
@@ -1018,6 +1019,8 @@ struct DebugProbe {
 		std::string                                text;
 		uint64_t                                   ib_addr = 0, ib_size = 0;
 		std::vector<std::pair<uint64_t, uint64_t>> vbs;
+		std::vector<std::pair<uint64_t, uint64_t>> bufs;
+		std::vector<uint64_t>                      code;
 	};
 	std::vector<Entry> entries;
 };
@@ -1047,7 +1050,8 @@ void DebugProbeDumpBytes(const std::string& name, uint64_t addr, uint64_t size) 
 
 int32_t DebugProbeBegin(RenderContext& ctx, vk::CommandBuffer cmd, const RenderState& rendering,
                         const DrawRenderState& state, const DrawCallInfo& draw,
-                        const DrawEmitInfo& emit, const DrawIndexBufferSource& index_source) {
+                        const DrawEmitInfo& emit, const DrawIndexBufferSource& index_source,
+                        const PreparedBindings& vs_bindings, uint64_t es_code, uint64_t gs_code) {
 	auto&           p = g_debug_probe;
 	std::lock_guard lock(p.mutex);
 	const auto      now    = std::chrono::steady_clock::now();
@@ -1071,6 +1075,18 @@ int32_t DebugProbeBegin(RenderContext& ctx, vk::CommandBuffer cmd, const RenderS
 			for (size_t i = 0; i < e.vbs.size(); i++) {
 				DebugProbeDumpBytes(fmt::format("hit{}_vb{}.bin", hit, i), e.vbs[i].first,
 				                    e.vbs[i].second);
+			}
+			for (size_t i = 0; i < e.bufs.size(); i++) {
+				DebugProbeDumpBytes(fmt::format("hit{}_buf{}.bin", hit, i), e.bufs[i].first,
+				                    e.bufs[i].second);
+			}
+			for (size_t i = 0; i < e.code.size(); i++) {
+				uint64_t size = 0;
+				while (size < 16384 && HostMemoryIsReadable(e.code[i] + size)) {
+					size += 4096 - ((e.code[i] + size) & 4095u);
+				}
+				DebugProbeDumpBytes(fmt::format("hit{}_code{}.bin", hit, i), e.code[i],
+				                    std::min<uint64_t>(size, 16384));
 			}
 			hit++;
 		}
@@ -1142,6 +1158,16 @@ int32_t DebugProbeBegin(RenderContext& ctx, vk::CommandBuffer cmd, const RenderS
 		                      vs.resources_dst[i].buffer_index,
 		                      r.Base48() - vs.buffers[vs.resources_dst[i].buffer_index].addr,
 		                      r.fields[3], vs.resources_dst[i].register_start);
+	}
+	e.text += fmt::format(" es={:x} gs={:x} bufs=", es_code, gs_code);
+	for (const auto& b: vs_bindings.buffer_sources) {
+		e.text += fmt::format("[{:x}/{}]", b.address, b.size);
+		e.bufs.emplace_back(b.address, b.size);
+	}
+	for (const auto code: {es_code, gs_code}) {
+		if (code != 0) {
+			e.code.push_back(code);
+		}
 	}
 	p.entries.push_back(std::move(e));
 	return static_cast<int32_t>(query);
@@ -1544,8 +1570,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 	m_context.GetCommandScheduler().BeginRendering(rendering);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
-	const auto debug_probe_query =
-	    DebugProbeBegin(m_context, vk_buffer, rendering, state, draw, emit, index_source);
+	const auto debug_probe_query = DebugProbeBegin(
+	    m_context, vk_buffer, rendering, state, draw, emit, index_source,
+	    m_graphics_bindings.vertex[0], buffer.GetShaders().GetVs().es_regs.data_addr,
+	    buffer.GetShaders().GetVs().gs_regs.data_addr);
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
