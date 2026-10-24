@@ -76,6 +76,7 @@ vk::Sampler SamplerCache::GetSampler(const ShaderSamplerResource& r, bool intege
 		const size_t limit =
 		    m_graphics.GetPhysicalDeviceProperties().limits.maxSamplerAllocationCount;
 		m_capacity = std::max(limit, 2 * SamplerLimitReserve) - SamplerLimitReserve;
+		m_capacity = std::min<size_t>(m_capacity, 300); // DEBUG ONLY: exercise Reclaim()
 	}
 	if (m_samplers.size() >= m_capacity) {
 		Reclaim();
