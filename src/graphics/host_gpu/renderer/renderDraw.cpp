@@ -1530,8 +1530,10 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 			const uint32_t vertices  = w[0];
 			const uint32_t instances = w[1];
 			const uint32_t first     = indexed ? w[2] : 0u;
+			static uint32_t offset_reports = 0;
+			const bool offsets = indexed ? (w[2] != 0u || w[3] != 0u || w[4] != 0u) : (w[2] != 0u || w[3] != 0u);
 			const bool outlier = instances > 4u || (indexed && (vertices > limit || first > limit || vertices + first > limit)) ||
-			                     (!indexed && vertices > (1u << 20u));
+			                     (!indexed && vertices > (1u << 20u)) || (offsets && offset_reports++ < 400u);
 			if (outlier || (seen++ % 4000u) == 0u) {
 				std::fprintf(stderr, "PS5PLUS ARGS %s n=%llu @%llx x%u limit=%u: %08x %08x %08x %08x %08x vs=%016llx ps=%016llx\n",
 				             outlier ? "OUTLIER" : "sample", static_cast<unsigned long long>(seen), static_cast<unsigned long long>(address),
