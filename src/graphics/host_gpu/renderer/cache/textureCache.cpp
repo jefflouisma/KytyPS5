@@ -2261,6 +2261,52 @@ void TextureCache::RunGarbageCollector() {
 	if (m_total_used_memory >= m_critical_gc_memory) {
 		collect(true);
 	}
+	// DEBUG ONLY: memory composition of the texture cache.
+	if (tick % 100 == 0) {
+		struct Stat {
+			size_t   count = 0;
+			uint64_t bytes = 0;
+		};
+		std::array<Stat, 6> stats {};
+		const auto          category = [](const Image& image) -> size_t {
+			if (image.heap_refs.load(std::memory_order_relaxed) != 0u) return 4;
+			if (image.depth_id) return 5;
+			if (!image.IsGpuModified()) return 0;
+			if (!image.SafeToDownload()) return 3;
+			return image.info.IsTiled() ? 1 : 2;
+		};
+		m_slot_images.ForEach([&](ImageId, const Image& image) {
+			if (!image.registered) return;
+			auto& stat = stats[category(image)];
+			stat.count++;
+			stat.bytes += image.AccountedSize();
+		});
+		std::array<size_t, 7> tail {};
+		size_t                seen = 0;
+		m_lru_cache.ForEachItemBelow(tick, [&](ImageId id) {
+			const auto* image = m_slot_images.try_get(id);
+			tail[image == nullptr || !image->registered ? 6 : category(*image)]++;
+			return ++seen == 64;
+		});
+		constexpr double GB = 1024.0 * 1024.0 * 1024.0;
+		::Log::WriteToConsoleAndLog(fmt::sprintf("GCSTATS tick=%llu usage=%.2f pressure=%.2f critical=%.2f plain=%zu/%.2f gmTiledSafe=%zu/%.2f "
+		     "gmLinearSafe=%zu/%.2f gmUnsafe=%zu/%.2f heap=%zu/%.2f depth=%zu/%.2f "
+		     "tail64=[p%zu t%zu l%zu u%zu h%zu d%zu x%zu] evictions=%llu\n",
+		     static_cast<unsigned long long>(tick), static_cast<double>(m_total_used_memory) / GB,
+		     static_cast<double>(m_pressure_gc_memory) / GB,
+		     static_cast<double>(m_critical_gc_memory) / GB, stats[0].count,
+		     static_cast<double>(stats[0].bytes) / GB, stats[1].count,
+		     static_cast<double>(stats[1].bytes) / GB, stats[2].count,
+		     static_cast<double>(stats[2].bytes) / GB, stats[3].count,
+		     static_cast<double>(stats[3].bytes) / GB, stats[4].count,
+		     static_cast<double>(stats[4].bytes) / GB, stats[5].count,
+		     static_cast<double>(stats[5].bytes) / GB, tail[0], tail[1], tail[2], tail[3], tail[4],
+		     tail[5], tail[6],
+		     static_cast<unsigned long long>(
+		         Common::DebugCounters::Detail::g_counters[static_cast<int>(
+		             Common::DebugCounters::Counter::TextureEvictions)]
+		             .load())));
+	}
 }
 
 void TextureCache::ProcessDownloadImages() {
