@@ -18,6 +18,8 @@
 #include "kernel/memory.h"
 
 #include <algorithm>
+#include <atomic>
+#include <ctime>
 #include <array>
 #include <bit>
 #include <cinttypes>
@@ -30,6 +32,9 @@
 #include <vulkan/vulkan_format_traits.hpp>
 
 namespace Libs::Graphics {
+
+extern std::atomic<uint64_t> g_debug_bda_faults;        // DEBUG ONLY
+extern std::atomic<uint64_t> g_debug_bda_fault_batches; // DEBUG ONLY
 
 namespace {
 
@@ -2203,6 +2208,13 @@ void TextureCache::RunGarbageCollector() {
 	if (m_graphics.CanReportMemoryUsage()) {
 		m_total_used_memory = m_graphics.GetDeviceMemoryUsage();
 	}
+	// DEBUG ONLY: BDA fault counts with wall-clock time, to line up with screenshots.
+	if (tick % 10 == 0) {
+		::Log::WriteToConsoleAndLog(fmt::sprintf(
+		    "FAULTS time=%lld faults=%llu batches=%llu\n", static_cast<long long>(std::time(nullptr)),
+		    static_cast<unsigned long long>(g_debug_bda_faults.load()),
+		    static_cast<unsigned long long>(g_debug_bda_fault_batches.load())));
+	}
 	if (m_total_used_memory < m_trigger_gc_memory) {
 		return;
 	}
@@ -2303,9 +2315,12 @@ void TextureCache::RunGarbageCollector() {
 			return ++seen == 64;
 		});
 		constexpr double GB = 1024.0 * 1024.0 * 1024.0;
-		::Log::WriteToConsoleAndLog(fmt::sprintf("GCSTATS tick=%llu usage=%.2f pressure=%.2f critical=%.2f plain=%zu/%.2f gmTiledSafe=%zu/%.2f "
+		::Log::WriteToConsoleAndLog(fmt::sprintf("GCSTATS time=%lld faults=%llu faultBatches=%llu tick=%llu usage=%.2f pressure=%.2f critical=%.2f plain=%zu/%.2f gmTiledSafe=%zu/%.2f "
 		     "gmLinearSafe=%zu/%.2f gmUnsafe=%zu/%.2f heap=%zu/%.2f depth=%zu/%.2f "
 		     "tail64=[p%zu t%zu l%zu u%zu h%zu d%zu x%zu] evictions=%llu\n",
+		     static_cast<long long>(std::time(nullptr)),
+		     static_cast<unsigned long long>(g_debug_bda_faults.load()),
+		     static_cast<unsigned long long>(g_debug_bda_fault_batches.load()),
 		     static_cast<unsigned long long>(tick), static_cast<double>(m_total_used_memory) / GB,
 		     static_cast<double>(m_pressure_gc_memory) / GB,
 		     static_cast<double>(m_critical_gc_memory) / GB, stats[0].count,
