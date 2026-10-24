@@ -23830,8 +23830,6 @@ private:
         VK_EXT_IMAGE_VIEW_MIN_LOD_EXTENSION_NAME,
         VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME};
     // GPU clock writes use the main calibration path when the device provides it.
-    const auto available_extensions =
-        m_physical_device.enumerateDeviceExtensionProperties().value;
     const char *calibrated_timestamps = nullptr;
     for (const char *name : {VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME,
                              VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME}) {
