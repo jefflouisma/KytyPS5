@@ -5529,6 +5529,8 @@ void TestNewShaderRecompilerScalarMemoryBindingDomains() {
               CountSourceOccurrences(source, "OpFunctionCall %ulong %get_bda_pointer ") == 1u &&
               CountSourceOccurrences(source, "OpFunction %uint DontInline") == 1u,
           "aligned scalar DWORDs must share one checked load body and each call it once");
+    Check(CountSourceOccurrences(source, "OpUConvert %ulong ") == 1u,
+          "wide scalar reads duplicated the shared aligned address offset");
   }
   Check(SpirvContainsOpcode(raw.spirv, 199),
         "raw scalar SOFFSET alignment was not emitted");

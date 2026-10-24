@@ -127,13 +127,12 @@ uint32_t ScratchByteAddress(ValueEmitContext& ctx, const IR::MemoryInfo& mem, ui
 
 uint32_t GuestAddress(ValueEmitContext& ctx, const IR::Inst& inst, const IR::MemoryInfo& mem) {
 	auto& state = ctx.state;
-	auto  low   = ctx.Arg(inst, 1);
-	if (mem.kind == IR::ResourceKind::ScalarAddress) {
-		low = Binary(state, spv::OpBitwiseAnd, TypeU32(state), low, ConstantU32(state, ~3u));
-	}
-	uint32_t address = 0;
+	const bool scalar = mem.kind == IR::ResourceKind::ScalarAddress;
+	const auto low = ctx.Arg(inst, 1);
+	uint32_t base_low = low;
+	uint32_t base_high = 0;
 	if (mem.address_is_full) {
-		address = PackU64(state, low, ctx.Arg(inst, 2));
+		base_high = ctx.Arg(inst, 2);
 	} else {
 		const auto* handle = inst.Arg(0).Resolve().TryInstruction();
 		if (handle == nullptr || handle->GetOpcode() != IR::ValueOpcode::GetAddressResource ||
@@ -141,15 +140,25 @@ uint32_t GuestAddress(ValueEmitContext& ctx, const IR::Inst& inst, const IR::Mem
 			ctx.Fail(inst, "has no address base pair");
 			return ConstantU64(state, 0);
 		}
-		auto base_low = ctx.Arg(*handle, 0);
-		if (mem.kind == IR::ResourceKind::ScalarAddress) {
-			base_low = Binary(state, spv::OpBitwiseAnd, TypeU32(state), base_low,
-			                  ConstantU32(state, ~3u));
-		}
-		const auto base = PackU64(state, base_low, ctx.Arg(*handle, 1));
-		address         = Binary(state, spv::OpIAdd, TypeU64(state), base,
-		                         Unary(state, spv::OpUConvert, TypeU64(state), low));
+		base_low = ctx.Arg(*handle, 0);
+		base_high = ctx.Arg(*handle, 1);
 	}
+	// Wide SMEM lowers to scalar DWORD reads with the same base and offset. Share
+	// only their pure address arithmetic, within this SPIR-V block's dominance scope.
+	const std::array key {base_low, base_high, mem.address_is_full ? 0u : low,
+	                      uint32_t(scalar) | (uint32_t(mem.address_is_full) << 1u)};
+	auto [cached, inserted] = state.guest_address_bases.try_emplace(key, 0u);
+	if (inserted) {
+		const auto align = [&](uint32_t value) {
+			return scalar ? Binary(state, spv::OpBitwiseAnd, TypeU32(state), value,
+			                       ConstantU32(state, ~3u)) : value;
+		};
+		const auto base = PackU64(state, align(base_low), base_high);
+		cached->second = mem.address_is_full ? base
+		    : Binary(state, spv::OpIAdd, TypeU64(state), base,
+		             Unary(state, spv::OpUConvert, TypeU64(state), align(low)));
+	}
+	const auto address = cached->second;
 	auto immediate = static_cast<int32_t>(mem.offset);
 	if (mem.kind == IR::ResourceKind::ScalarAddress) {
 		immediate = static_cast<int32_t>(static_cast<uint32_t>(immediate) & ~3u);
