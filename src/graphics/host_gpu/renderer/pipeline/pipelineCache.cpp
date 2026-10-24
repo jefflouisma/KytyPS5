@@ -131,16 +131,6 @@ bool ReadShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) 
 	       Libs::LibKernel::Memory::TryReadBufferBacking(address, values.data(), values.size_bytes());
 }
 
-bool ReadShaderProtectedMemory(uint64_t address, std::span<uint32_t> values) {
-	return Libs::LibKernel::Memory::TryReadProtectedBacking(address, values.data(),
-	                                                        values.size_bytes());
-}
-
-bool TryReadSettledShaderGuestMemory(void*, uint64_t address, std::span<uint32_t> values) {
-	return !values.empty() && Libs::LibKernel::Memory::TryReadSettledBufferBacking(
-	                              address, values.data(), values.size_bytes());
-}
-
 void DumpShaderSpirv(const char* stage_name, uint64_t shader_hash,
                      const std::vector<uint32_t>& spirv) {
 	if (!Config::GraphicsDebugDumpEnabled()) {
@@ -450,12 +440,10 @@ struct PipelineCache::ProgramCache {
 			entry = Adopt(lookup_key);
 		}
 		ShaderRecompiler::IR::SrtRuntime             runtime {
-		    .user_data                      = user_data,
-		    .shader_base                    = params.Base(),
-		    .read_specialization_memory     = ReadShaderGuestMemory,
-		    .try_read_specialization_memory = TryReadSettledShaderGuestMemory,
-		    .image_heap                     = image_heap,
-		    .read_protected                 = ReadShaderProtectedMemory,
+		    .user_data                  = user_data,
+		    .shader_base                = params.Base(),
+		    .read_specialization_memory = ReadShaderGuestMemory,
+		    .image_heap                 = image_heap,
 		};
 		if constexpr (std::is_same_v<InputInfo, ShaderComputeInputInfo>) {
 			runtime.workgroup_counts = input_info.workgroup_counts;

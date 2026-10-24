@@ -133,11 +133,6 @@ int UnmapAmmMemory(uint64_t vaddr, size_t size);
 bool                   TryWriteBacking(uint64_t vaddr, const void* data, uint64_t size);
 bool                   TryReadBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size);
-// GPU thread. TryReadProtectedBacking reads a page protected for GPU writes, waiting only when
-// GPU work may change these bytes (false without a backing alias). TryReadSettledBufferBacking
-// is TryReadBufferBacking without the readback: it fails while GPU writes are pending.
-bool                   TryReadProtectedBacking(uint64_t vaddr, void* data, uint64_t size);
-bool                   TryReadSettledBufferBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   TryReadSparseBacking(uint64_t vaddr, void* data, uint64_t size);
 bool                   CopySparseMemory(uint64_t vaddr, void* data, uint64_t size);
 [[nodiscard]] uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size);
@@ -148,10 +143,9 @@ void                   InstallGpuResources(Graphics::RenderContext* renderer) no
 // userfaultfd write protection may have raised.
 enum class GpuFaultCause { Protection, WriteProtect };
 // Resolves a page-tracking fault. False when the guest's own protection forbids the access
-// or the tracker does not account for the fault. The caller resumes at *resume_pc when set.
+// or the tracker does not account for the fault.
 [[nodiscard]] bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr,
-                                  GpuFaultCause cause, uint64_t fault_pc = 0,
-                                  uint64_t* resume_pc = nullptr) noexcept;
+                                  GpuFaultCause cause) noexcept;
 
 int KYTY_SYSV_ABI KernelMapNamedFlexibleMemory(void** addr_in_out, size_t len, int prot, int flags,
                                                const char* name);
