@@ -1404,12 +1404,20 @@ IR::Program TranslateProgram(const Decoder::Program& decoded, const CFG::Graph& 
 				                      builtin(IR::StageInputKind::PackedAncillary));
 			}
 		} else if (options.stage == ShaderType::Vertex) {
-			// Vulkan owns primitive assembly; each vertex subgroup is one NGG wave.
-			// ESVertCount describes input vertices, independently of lane ordinals.
-			auto vertex_count = IR::U32(entry_ir.Emit(IR::ValueOpcode::BitCount32, {initial_lo}));
+			// Vulkan owns primitive assembly; each vertex subgroup is one NGG wave. Shaders turn
+			// ESVertCount into the EXEC mask of the first lanes (s_bfm), as the hardware packs
+			// a wave's vertices into its lowest lanes. A host vertex subgroup can leave inactive
+			// lanes between active ones (NVIDIA does), so count through the highest active lane:
+			// counting active lanes would turn the highest ones off and their outputs to zero.
+			const auto u32       = [](uint32_t value) { return IR::U32(IR::Value(value)); };
+			const auto lanes_lo  = entry_ir.IAdd(
+			    IR::U32(entry_ir.Emit(IR::ValueOpcode::FindUMsb32, {initial_lo})), u32(1u));
+			auto       vertex_count = lanes_lo;
 			if (options.wave_size == 64u) {
-				vertex_count = entry_ir.IAdd(vertex_count, IR::U32(entry_ir.Emit(
-				    IR::ValueOpcode::BitCount32, {initial_hi})));
+				const auto lanes_hi = entry_ir.IAdd(
+				    IR::U32(entry_ir.Emit(IR::ValueOpcode::FindUMsb32, {initial_hi})), u32(33u));
+				vertex_count = entry_ir.Select(entry_ir.INotEqual(initial_hi, u32(0u)), lanes_hi,
+				                               lanes_lo);
 			}
 			entry_ir.SetScalarReg(static_cast<IR::ScalarReg>(2),
 			                      IR::U32(IR::Value(options.wave_size << 12u)));

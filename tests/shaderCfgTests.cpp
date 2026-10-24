@@ -1955,14 +1955,19 @@ void TestNggVertexEntryState() {
     options.wave_size = input.wave_size;
     const auto result = RecompileForTest(params.code, options);
     bool live_vertex_range = false;
+    bool highest_lane_count = false;
     for (const auto *block : result.program.blocks) {
       for (const auto &inst : *block) {
         if (inst.GetOpcode() == IR::ValueOpcode::UGreaterThan32) {
           const auto count = inst.Arg(0).Resolve();
           live_vertex_range |= count.IsImmediate() && count.U32() == wave_size;
         }
+        highest_lane_count |= inst.GetOpcode() == IR::ValueOpcode::FindUMsb32;
       }
     }
+    // Host vertex subgroups may leave inactive lanes between active ones: ESVertCount
+    // must reach the highest active lane, not count the active ones.
+    Check(highest_lane_count, "NGG vertex count does not reach the highest active lane");
     Check(live_vertex_range && std::ranges::any_of(result.program.info.outputs,
               [](const auto &output) {
                 return output.kind == IR::StageOutputKind::Position;
