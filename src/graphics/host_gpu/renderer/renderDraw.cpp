@@ -38,6 +38,12 @@
 #include <bit>
 #include <cmath>
 #include <cstdio>
+#include <string>
+#include <chrono>
+#include <unordered_set>
+#include <map>
+#include <fstream>
+#include <filesystem>
 #include <cstring>
 #include <limits>
 #include <memory>
@@ -80,6 +86,7 @@ std::pair<int32_t, uint32_t> ResolveDrawOffsets(uint32_t index_offset,
 }
 
 static std::atomic<uint32_t> g_draw_state_log_count   = 0;
+
 static std::atomic<uint32_t> g_draw_input_log_count   = 0;
 static std::atomic<uint32_t> g_mrt_state_log_count    = 0;
 
@@ -906,6 +913,72 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 	    target_export_mapping, state.ps_active, state.vertex_info, state.ps_input_info);
 }
 
+// DEBUG ONLY: runtime draw filter for bisecting broken draws. The control file holds lines
+// "skip <hex vertex shader hash>" and "dump"; a dump logs the vertex shaders drawn over the next
+// three seconds.
+namespace {
+struct DebugDrawFilter {
+	std::mutex                                   mutex;
+	std::unordered_set<uint64_t>                 skip;
+	std::filesystem::file_time_type              stamp {};
+	std::chrono::steady_clock::time_point        next_check {};
+	std::chrono::steady_clock::time_point        dump_until {};
+	bool                                         dumping = false;
+	std::map<uint64_t, std::pair<uint32_t, uint64_t>> counts; // vs -> draws, last ps
+};
+DebugDrawFilter g_debug_draw_filter;
+
+bool DebugSkipDraw(const DrawRenderState& state) {
+	static const std::filesystem::path path = "/Volumes/4TB_Drive/tmp/ps5plus-dev/draw-filter";
+	auto&                              f    = g_debug_draw_filter;
+	std::lock_guard                    lock(f.mutex);
+	const auto                         now = std::chrono::steady_clock::now();
+	if (now >= f.next_check) {
+		f.next_check = now + std::chrono::milliseconds(200);
+		std::error_code ec;
+		const auto      stamp = std::filesystem::last_write_time(path, ec);
+		if (!ec && stamp != f.stamp) {
+			f.stamp = stamp;
+			f.skip.clear();
+			std::ifstream in(path);
+			std::string   word;
+			while (in >> word) {
+				if (word == "skip") {
+					std::string hex;
+					in >> hex;
+					f.skip.insert(std::stoull(hex, nullptr, 16));
+				} else if (word == "dump") {
+					f.dumping    = true;
+					f.dump_until = now + std::chrono::seconds(3);
+					f.counts.clear();
+				}
+			}
+			::Log::WriteToConsoleAndLog(fmt::format("DRAWFILTER skip={} dump={}\n", f.skip.size(),
+			                                        f.dumping ? 1 : 0));
+		}
+	}
+	const auto* vs = state.vertex_info[0].stage.program;
+	const auto  vs_hash = vs != nullptr ? vs->shader_hash : 0;
+	if (f.dumping) {
+		auto& entry = f.counts[vs_hash];
+		entry.first++;
+		entry.second = state.ps_active && state.ps_input_info.stage.program != nullptr
+		                   ? state.ps_input_info.stage.program->shader_hash
+		                   : 0;
+		if (now >= f.dump_until) {
+			f.dumping = false;
+			std::string text = fmt::format("DRAWDUMP shaders={}\n", f.counts.size());
+			for (const auto& [hash, value]: f.counts) {
+				text += fmt::format("DRAWVS {:016x} draws={} ps={:016x}\n", hash, value.first,
+				                    value.second);
+			}
+			::Log::WriteToConsoleAndLog(text);
+		}
+	}
+	return f.skip.contains(vs_hash);
+}
+} // namespace
+
 bool RenderExecutor::PrepareDrawRenderState(CommandBuffer& buffer, const DrawCallInfo& draw,
                                             uint32_t            render_target_slice_offset,
 	                                        DrawRenderState& state) {
@@ -1450,6 +1523,10 @@ bool RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 		ResetBindings();
 		return true;
 	}
+	if (DebugSkipDraw(state)) {
+		ResetBindings();
+		return true;
+	}
 
 	LogDrawStateIfNeeded(buffer, draw, state, args.index_type_and_size,
 	                     args.index_addr);
@@ -1524,6 +1601,10 @@ bool RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 	}
 	DrawRenderState state {};
 	if (!PrepareDrawRenderState(buffer, draw, args.render_target_slice_offset, state)) {
+		ResetBindings();
+		return true;
+	}
+	if (DebugSkipDraw(state)) {
 		ResetBindings();
 		return true;
 	}
