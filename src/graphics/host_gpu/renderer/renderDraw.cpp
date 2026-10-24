@@ -918,6 +918,10 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 // "skip <hex vertex shader hash>" and "dump"; a dump logs the vertex shaders drawn over the next
 // three seconds.
 std::atomic<uint32_t> g_debug_runtime_flags {0}; // DEBUG ONLY: 1 cpu_indirect, 2 unsized_index
+// DEBUG ONLY: "window <ib hex> <first> <count>" draws only that index range of the matching draw.
+std::atomic<uint64_t> g_debug_window_ib {0};
+std::atomic<uint32_t> g_debug_window_first {0};
+std::atomic<uint32_t> g_debug_window_count {0};
 namespace {
 void DebugProbeArm(const float rect[4]);
 struct DebugDrawFilter {
@@ -947,6 +951,7 @@ bool DebugSkipDraw(const DrawRenderState& state, bool indirect) {
 			std::ifstream in(path);
 			std::string   word;
 			uint32_t      flags = 0;
+			bool          window_set = false;
 			while (in >> word) {
 				if (word == "flag") {
 					std::string name;
@@ -958,6 +963,14 @@ bool DebugSkipDraw(const DrawRenderState& state, bool indirect) {
 					std::string hex;
 					in >> hex;
 					f.skip.insert(std::stoull(hex, nullptr, 16));
+				} else if (word == "window") {
+					std::string hex;
+					uint32_t    first = 0, count = 0;
+					in >> hex >> first >> count;
+					g_debug_window_ib.store(std::stoull(hex, nullptr, 16));
+					g_debug_window_first.store(first);
+					g_debug_window_count.store(count);
+					window_set = true;
 				} else if (word == "probe") {
 					float rect[4] {};
 					in >> rect[0] >> rect[1] >> rect[2] >> rect[3];
@@ -970,6 +983,9 @@ bool DebugSkipDraw(const DrawRenderState& state, bool indirect) {
 				}
 			}
 			g_debug_runtime_flags.store(flags);
+			if (!window_set) {
+				g_debug_window_ib.store(0);
+			}
 			::Log::WriteToConsoleAndLog(fmt::format("DRAWFILTER skip={} dump={} flags={}\n",
 			                                        f.skip.size(), f.dumping ? 1 : 0, flags));
 		}
@@ -1158,6 +1174,13 @@ int32_t DebugProbeBegin(RenderContext& ctx, vk::CommandBuffer cmd, const RenderS
 		                      vs.resources_dst[i].buffer_index,
 		                      r.Base48() - vs.buffers[vs.resources_dst[i].buffer_index].addr,
 		                      r.fields[3], vs.resources_dst[i].register_start);
+	}
+	if (vs.stage.resources != nullptr) {
+		e.text += " ud=";
+		const auto& ud = vs.stage.resources->user_data;
+		for (size_t i = 0; i < std::min<size_t>(ud.size(), 24); i++) {
+			e.text += fmt::format("{:08x},", ud[i]);
+		}
 	}
 	e.text += fmt::format(" es={:x} gs={:x} bufs=", es_code, gs_code);
 	for (const auto& b: vs_bindings.buffer_sources) {
@@ -1580,7 +1603,14 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	if (mesh_active) {
 		vk_buffer.drawMeshTasksEXT(mesh_groups, draw.instance_count, 1);
 	} else if (args_buffer.first == nullptr) {
-		EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
+		if (index_source.address != 0 && index_source.address == g_debug_window_ib.load()) {
+			const auto first = std::min(g_debug_window_first.load(), draw.index_count);
+			const auto count = std::min(g_debug_window_count.load(), draw.index_count - first);
+			vk_buffer.drawIndexed(count, draw.instance_count, first, emit.vertex_offset,
+			                      emit.first_instance);
+		} else {
+			EmitDrawPrimitives(ucfg, vk_buffer, draw, emit);
+		}
 	} else if (draw.IsIndexed()) {
 		vk_buffer.drawIndexedIndirect(args_buffer.first->Handle(), args_buffer.second,
 		                              emit.indirect.count, emit.indirect.stride);
