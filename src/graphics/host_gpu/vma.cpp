@@ -39,6 +39,10 @@ bool GraphicContext::CreateAllocator() {
 	info.device           = device;
 	info.pVulkanFunctions = &functions;
 	info.vulkanApiVersion = VULKAN_TARGET_API_VERSION;
+	// The texture cache frees images of mixed sizes and lifetimes. A block returns to the driver
+	// only once all of its allocations are freed, so the default 256 MiB blocks kept gigabytes of
+	// device memory reserved for free space; smaller blocks empty out sooner.
+	info.preferredLargeHeapBlockSize = 64ull * 1024 * 1024;
 	info.flags = VMA_ALLOCATOR_CREATE_BUFFER_DEVICE_ADDRESS_BIT;
 	if (memory_budget_ext_enabled) {
 		info.flags |= VMA_ALLOCATOR_CREATE_EXT_MEMORY_BUDGET_BIT;
