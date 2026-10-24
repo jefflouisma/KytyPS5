@@ -36,6 +36,7 @@
 #include <vector>
 
 namespace Libs::Graphics {
+extern std::atomic<uint32_t> g_debug_runtime_flags; // DEBUG ONLY
 
 static thread_local CommandProcessor* g_current_processor = nullptr;
 static thread_local Pm4Execution*     g_current_execution = nullptr;
@@ -948,7 +949,8 @@ void CommandProcessor::DrawIndirectMulti(uint32_t data_offset, uint32_t max_coun
 	const DrawIndirectArgs records {args_addr, draw_count, stride_in_bytes};
 	// DEBUG ONLY: PS5PLUS_CPU_INDIRECT reads every record on the CPU; PS5PLUS_ZERO_OFFSETS drops
 	// record offsets that no SGPR receives, as the hardware does.
-	static const bool debug_cpu_indirect = std::getenv("PS5PLUS_CPU_INDIRECT") != nullptr;
+	const bool debug_cpu_indirect = std::getenv("PS5PLUS_CPU_INDIRECT") != nullptr ||
+	                                (Libs::Graphics::g_debug_runtime_flags.load() & 1u) != 0;
 	static const bool debug_zero_offsets = std::getenv("PS5PLUS_ZERO_OFFSETS") != nullptr;
 	static std::atomic<uint64_t> debug_records {0}, debug_vertex {0}, debug_instance {0};
 	const bool no_destination = registers.vertex_offset == Pm4::SH_NOP &&

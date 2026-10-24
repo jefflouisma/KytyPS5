@@ -916,6 +916,7 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 // DEBUG ONLY: runtime draw filter for bisecting broken draws. The control file holds lines
 // "skip <hex vertex shader hash>" and "dump"; a dump logs the vertex shaders drawn over the next
 // three seconds.
+std::atomic<uint32_t> g_debug_runtime_flags {0}; // DEBUG ONLY: 1 cpu_indirect, 2 unsized_index
 namespace {
 struct DebugDrawFilter {
 	std::mutex                                   mutex;
@@ -925,10 +926,11 @@ struct DebugDrawFilter {
 	std::chrono::steady_clock::time_point        dump_until {};
 	bool                                         dumping = false;
 	std::map<uint64_t, std::pair<uint32_t, uint64_t>> counts; // vs -> draws, last ps
+	std::map<uint64_t, uint32_t>                 kinds;  // vs -> OR of 1 indirect, 2 mesh, 4 tess, 8 embedded fetch
 };
 DebugDrawFilter g_debug_draw_filter;
 
-bool DebugSkipDraw(const DrawRenderState& state) {
+bool DebugSkipDraw(const DrawRenderState& state, bool indirect) {
 	static const std::filesystem::path path = "/Volumes/4TB_Drive/tmp/ps5plus-dev/draw-filter";
 	auto&                              f    = g_debug_draw_filter;
 	std::lock_guard                    lock(f.mutex);
@@ -942,7 +944,14 @@ bool DebugSkipDraw(const DrawRenderState& state) {
 			f.skip.clear();
 			std::ifstream in(path);
 			std::string   word;
+			uint32_t      flags = 0;
 			while (in >> word) {
+				if (word == "flag") {
+					std::string name;
+					in >> name;
+					flags |= name == "cpu_indirect" ? 1u : name == "unsized_index" ? 2u : 0u;
+					continue;
+				}
 				if (word == "skip") {
 					std::string hex;
 					in >> hex;
@@ -951,10 +960,12 @@ bool DebugSkipDraw(const DrawRenderState& state) {
 					f.dumping    = true;
 					f.dump_until = now + std::chrono::seconds(3);
 					f.counts.clear();
+					f.kinds.clear();
 				}
 			}
-			::Log::WriteToConsoleAndLog(fmt::format("DRAWFILTER skip={} dump={}\n", f.skip.size(),
-			                                        f.dumping ? 1 : 0));
+			g_debug_runtime_flags.store(flags);
+			::Log::WriteToConsoleAndLog(fmt::format("DRAWFILTER skip={} dump={} flags={}\n",
+			                                        f.skip.size(), f.dumping ? 1 : 0, flags));
 		}
 	}
 	const auto* vs = state.vertex_info[0].stage.program;
@@ -962,6 +973,10 @@ bool DebugSkipDraw(const DrawRenderState& state) {
 	if (f.dumping) {
 		auto& entry = f.counts[vs_hash];
 		entry.first++;
+		f.kinds[vs_hash] |= (indirect ? 1u : 0u) |
+		                    (vs != nullptr && vs->stage == ShaderType::Mesh ? 2u : 0u) |
+		                    (state.programs.VertexStageCount() == 3 ? 4u : 0u) |
+		                    (state.vertex_info[0].fetch_embedded ? 8u : 0u);
 		entry.second = state.ps_active && state.ps_input_info.stage.program != nullptr
 		                   ? state.ps_input_info.stage.program->shader_hash
 		                   : 0;
@@ -969,8 +984,8 @@ bool DebugSkipDraw(const DrawRenderState& state) {
 			f.dumping = false;
 			std::string text = fmt::format("DRAWDUMP shaders={}\n", f.counts.size());
 			for (const auto& [hash, value]: f.counts) {
-				text += fmt::format("DRAWVS {:016x} draws={} ps={:016x}\n", hash, value.first,
-				                    value.second);
+				text += fmt::format("DRAWVS {:016x} draws={} ps={:016x} kind={}\n", hash,
+				                    value.first, value.second, f.kinds[hash]);
 			}
 			::Log::WriteToConsoleAndLog(text);
 		}
@@ -1085,7 +1100,7 @@ static void CommitIndexBuffer(vk::CommandBuffer vk_buffer, const PreparedIndexBu
 	if (prepared.buffer == nullptr) {
 		return;
 	}
-	if (prepared.sized) {
+	if (prepared.sized && (g_debug_runtime_flags.load(std::memory_order_relaxed) & 2u) == 0) {
 		vk_buffer.bindIndexBuffer2KHR(prepared.buffer, prepared.offset, prepared.size,
 		                              prepared.type);
 		return;
@@ -1523,7 +1538,7 @@ bool RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 		ResetBindings();
 		return true;
 	}
-	if (DebugSkipDraw(state)) {
+	if (DebugSkipDraw(state, args.indirect.address != 0)) {
 		ResetBindings();
 		return true;
 	}
@@ -1604,7 +1619,7 @@ bool RenderExecutor::DrawAuto(uint64_t submit_id, CommandBuffer& buffer, const D
 		ResetBindings();
 		return true;
 	}
-	if (DebugSkipDraw(state)) {
+	if (DebugSkipDraw(state, args.indirect.address != 0)) {
 		ResetBindings();
 		return true;
 	}
