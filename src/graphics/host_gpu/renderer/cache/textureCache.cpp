@@ -2212,13 +2212,32 @@ void TextureCache::RunGarbageCollector() {
 		const uint64_t age       = std::min<uint64_t>(aggressive ? 160 : pressured ? 80 : 16, tick);
 		size_t         deletions = aggressive ? 40 : pressured ? 20 : 10;
 		std::vector<ImageId> candidates;
+		std::vector<ImageId> heap_sampled;
 		candidates.reserve(deletions);
 		// Deleting depth recursively deletes its stencil association, so finish LRU traversal
-		// first.
+		// first. Step over images the collector keeps instead of spending the deletion budget on
+		// them: render targets are the least recently used images for long stretches, and a cold
+		// tail of them would otherwise stop collection while other textures fill device memory.
 		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
+			const auto* owner = m_slot_images.try_get(id);
+			if (owner == nullptr || !owner->registered || owner->depth_id) {
+				return false;
+			}
+			if (owner->heap_refs.load(std::memory_order_relaxed) != 0u) {
+				heap_sampled.push_back(id);
+				return false;
+			}
+			if (owner->IsGpuModified() && owner->SafeToDownload() &&
+			    (owner->info.IsTiled() || !pressured) && !IsSupersededSibling(id, *owner)) {
+				return false;
+			}
 			candidates.push_back(id);
 			return candidates.size() == deletions;
 		});
+		for (const auto id: heap_sampled) {
+			// Resident heaps sample it without touching it.
+			TouchImage(m_slot_images[id]);
+		}
 		for (const auto id: candidates) {
 			if (deletions == 0) {
 				break;
@@ -2226,11 +2245,6 @@ void TextureCache::RunGarbageCollector() {
 			--deletions;
 			auto owner = m_slot_images.try_get(id);
 			if (owner == nullptr || !owner->registered || owner->depth_id) {
-				continue;
-			}
-			if (owner->heap_refs.load(std::memory_order_relaxed) != 0u) {
-				// Resident heaps sample it without touching it.
-				TouchImage(*owner);
 				continue;
 			}
 			if (owner->IsGpuModified() && !IsSupersededSibling(id, *owner)) {
