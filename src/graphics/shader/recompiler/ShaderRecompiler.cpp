@@ -950,6 +950,10 @@ CompileResult CompileProgram(TranslateResult translated, const CompileOptions& o
 	IR::RemoveIdentities(ir);
 	IR::EliminateDeadCode(ir.blocks);
 	IR::ForwardGuardedSelects(ir.blocks);
+	// Forwarding the guarded register values exposes inverse and repeated bitcasts.
+	// Fold them before emission, while preserving the remaining EXEC selects.
+	IR::ConstantPropagationPass(ir.blocks, ir.wave_size);
+	IR::RemoveIdentities(ir);
 	IR::EliminateDeadCode(ir.blocks);
 
 	IR::CollectShaderInfo(ir, options.input_info);
