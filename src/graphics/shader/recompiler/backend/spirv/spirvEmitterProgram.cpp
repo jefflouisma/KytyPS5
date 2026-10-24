@@ -761,6 +761,7 @@ void EmitProgram(EmitterState& state) {
 	}
 	DefineBdaLoads(state);
 	DefineMinMaxF32Functions(state);
+	DefineF16ToF32Function(state);
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter

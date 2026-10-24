@@ -201,13 +201,35 @@ uint32_t EmitTrigCycleF32(EmitterState& state, uint32_t src, bool preserve_signe
 	              src, fract);
 }
 
-uint32_t EmitF16BitsToF32(EmitterState& state, uint32_t bits) {
+static uint32_t EmitF16BitsToF32Body(EmitterState& state, uint32_t bits) {
 	const auto unpacked = state.builder.AllocateId();
 	const auto ret      = state.builder.AllocateId();
 	state.builder.AddFunction(spv::OpExtInst, TypeF32Vector(state, 2), unpacked, GlslStd450(state),
 	                          GLSLstd450UnpackHalf2x16, bits);
 	state.builder.AddFunction(spv::OpCompositeExtract, TypeF32(state), ret, unpacked, 0);
 	return ret;
+}
+
+uint32_t EmitF16BitsToF32(EmitterState& state, uint32_t bits) {
+	if (state.f16_to_f32_function == 0u) state.f16_to_f32_function = state.builder.AllocateId();
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpFunctionCall, TypeF32(state), result,
+	                          state.f16_to_f32_function, bits);
+	return result;
+}
+
+void DefineF16ToF32Function(EmitterState& state) {
+	if (state.f16_to_f32_function == 0u) return;
+	const auto signature = state.builder.Type(spv::OpTypeFunction, TypeF32(state), TypeU32(state));
+	const auto bits = state.builder.AllocateId();
+	state.builder.AddName(state.f16_to_f32_function, "unpack_f16_to_f32");
+	state.builder.AddFunction(spv::OpFunction, TypeF32(state), state.f16_to_f32_function,
+	                          spv::FunctionControlMaskNone, signature);
+	state.builder.AddFunction(spv::OpFunctionParameter, TypeU32(state), bits);
+	EmitLabel(state, state.builder.AllocateId());
+	const auto result = EmitF16BitsToF32Body(state, bits);
+	state.builder.AddFunction(spv::OpReturnValue, result);
+	state.builder.AddFunction(spv::OpFunctionEnd);
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter

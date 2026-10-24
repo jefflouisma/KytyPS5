@@ -16381,6 +16381,27 @@ void TestSpirvRepeatedEmission() {
         "split-wave re-emission retained native-wave definitions");
 }
 
+void TestSpirvSharedF16Conversion() {
+  using namespace ShaderRecompiler;
+  const uint32_t shader[] = {EncodeSopp(0x01)};
+  auto options = MakeCompileOptions(ShaderType::Compute);
+  auto compiled = RecompileForTest(shader, options);
+  IR::IREmitter emitter(compiled.program.blocks.front());
+  const auto lane = emitter.Emit(IR::ValueOpcode::LaneId, {});
+  const auto bits = emitter.Emit(IR::ValueOpcode::ConvertU16U32, {lane});
+  const auto half = emitter.Emit(IR::ValueOpcode::BitCastF16U16, {bits});
+  emitter.Emit(IR::ValueOpcode::ConvertF32F16, {half});
+  emitter.Emit(IR::ValueOpcode::ConvertF32F16, {half});
+  compiled.program.shader_info_complete = false;
+  IR::CollectShaderInfo(compiled.program, options.input_info);
+  const auto shared = Spirv::EmitProgram(compiled.program, options.input_info);
+  CheckSpirvBinaryValidates(shared);
+  Check(SpirvInstructionOpcodeCount(shared, spv::OpFunction) == 2u &&
+            SpirvInstructionOpcodeCount(shared, spv::OpFunctionCall) == 2u &&
+            SpirvInstructionOpcodeCount(shared, spv::OpExtInst) == 1u,
+        "repeated half conversions did not share the existing unpack operation");
+}
+
 void TestSpirvSharedMinMax() {
   using namespace ShaderRecompiler;
   const uint32_t shader[] = {EncodeSopp(0x01)};
@@ -16811,6 +16832,7 @@ int main() {
   TestSpirvRepeatedEmission();
   TestSpirvConditionVotes();
   TestSpirvSharedMinMax();
+  TestSpirvSharedF16Conversion();
   TestRepeatedExportsHaveOneInterface();
   TestNewShaderRecompilerSpirvSizeBaselines();
   TestDemandDrivenSpirvDeclarations();
