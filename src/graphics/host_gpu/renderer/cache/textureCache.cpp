@@ -2210,7 +2210,13 @@ void TextureCache::RunGarbageCollector() {
 		bool           pressured  = m_total_used_memory >= m_pressure_gc_memory;
 		bool           aggressive = allow_aggressive && m_total_used_memory >= m_critical_gc_memory;
 		const uint64_t age       = std::min<uint64_t>(aggressive ? 160 : pressured ? 80 : 16, tick);
-		size_t         deletions = aggressive ? 40 : pressured ? 20 : 10;
+		// Images the GPU never wrote are uploaded again from guest memory, so they need not wait
+		// as long as the GPU-written images above. Over the critical limit they go after a few
+		// idle frames: a scene change can create gigabytes of textures within seconds, and none
+		// of the previous scene's would otherwise be old enough to evict before memory runs out.
+		const uint64_t upload_age =
+		    aggressive ? std::min<uint64_t>(4, tick) : std::min<uint64_t>(age, 16);
+		size_t         deletions  = aggressive ? 40 : pressured ? 20 : 10;
 		std::vector<ImageId> candidates;
 		std::vector<ImageId> heap_sampled;
 		candidates.reserve(deletions);
@@ -2218,9 +2224,12 @@ void TextureCache::RunGarbageCollector() {
 		// first. Step over images the collector keeps instead of spending the deletion budget on
 		// them: render targets are the least recently used images for long stretches, and a cold
 		// tail of them would otherwise stop collection while other textures fill device memory.
-		m_lru_cache.ForEachItemBelow(tick - age, [&](ImageId id) {
+		m_lru_cache.ForEachItemBelow(tick - upload_age, [&](ImageId id) {
 			const auto* owner = m_slot_images.try_get(id);
 			if (owner == nullptr || !owner->registered || owner->depth_id) {
+				return false;
+			}
+			if (owner->IsGpuModified() && m_lru_cache.TickOf(owner->lru_id) > tick - age) {
 				return false;
 			}
 			if (owner->heap_refs.load(std::memory_order_relaxed) != 0u) {
