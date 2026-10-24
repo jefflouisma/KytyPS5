@@ -9,12 +9,16 @@
 #include "graphics/host_gpu/vulkanCommon.h"
 
 #include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cinttypes>
 #include <cstring>
 #include <limits>
 
 namespace Libs::Graphics {
+
+std::atomic<uint64_t> g_debug_bda_faults {0};        // DEBUG ONLY
+std::atomic<uint64_t> g_debug_bda_fault_batches {0}; // DEBUG ONLY
 
 namespace {
 
@@ -152,6 +156,11 @@ void FaultManager::ProcessFaultBuffer() {
 		// The counter keeps counting faults that did not fit in the area.
 		const auto count =
 		    std::min(static_cast<uint32_t>(faults[0]), static_cast<uint32_t>(MaxPageFaults - 1));
+		// DEBUG ONLY: count BDA page faults (pages that read zero for the faulting work).
+		g_debug_bda_faults.fetch_add(static_cast<uint32_t>(faults[0]), std::memory_order_relaxed);
+		if (faults[0] != 0) {
+			g_debug_bda_fault_batches.fetch_add(1, std::memory_order_relaxed);
+		}
 		for (uint32_t index = 1; index <= count; ++index) {
 			const auto address = BufferCache::GuestAddress(faults[index]);
 			fault_ranges.Add(address, BufferCache::CACHING_PAGESIZE);
