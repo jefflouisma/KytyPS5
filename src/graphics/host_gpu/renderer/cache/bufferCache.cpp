@@ -782,6 +782,31 @@ void BufferCache::RunGarbageCollector() {
 	const uint64_t age        = std::min<uint64_t>(aggressive ? 80 : 160, tick);
 	const size_t   limit      = aggressive ? 64 : 32;
 
+	// DEBUG ONLY: memory composition of the buffer cache.
+	if (tick % 100 == 0) {
+		size_t   count = 0, resident = 0, dirty = 0;
+		uint64_t bytes = 0, resident_bytes = 0, dirty_bytes = 0;
+		m_slot_buffers.ForEach([&](BufferId, const Buffer& buffer) {
+			if (buffer.is_deleted) return;
+			count++;
+			bytes += buffer.Size();
+			if (buffer.bda_resident) {
+				resident++;
+				resident_bytes += buffer.Size();
+			}
+			if (GuestRange {buffer.CpuAddress(), buffer.Size()}.Valid() &&
+			    m_memory_tracker.IsRegionGpuModified(buffer.CpuAddress(), buffer.Size())) {
+				dirty++;
+				dirty_bytes += buffer.Size();
+			}
+		});
+		constexpr double GB = 1024.0 * 1024.0 * 1024.0;
+		::Log::WriteToConsoleAndLog(fmt::sprintf("BUFSTATS tick=%llu usage=%.2f buffers=%zu/%.2f bdaResident=%zu/%.2f gpuDirty=%zu/%.2f\n",
+		     static_cast<unsigned long long>(tick), static_cast<double>(m_total_used_memory) / GB,
+		     count, static_cast<double>(bytes) / GB, resident,
+		     static_cast<double>(resident_bytes) / GB, dirty, static_cast<double>(dirty_bytes) / GB));
+	}
+
 	std::vector<BufferId> dirty_buffers;
 	size_t                retire_count = 0;
 	m_lru_cache.ForEachItemBelow(tick - age, [&](BufferId id) {
