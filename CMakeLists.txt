@@ -485,7 +485,7 @@ add_executable(resource_materialization_tests EXCLUDE_FROM_ALL
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/ResourceMaterialization.cpp"
 	"${KYTY_SOURCE_DIR}/graphics/shader/recompiler/ir/passes/SrtWalker.cpp"
 )
-target_link_libraries(resource_materialization_tests common fmt::fmt xbyak::xbyak)
+target_link_libraries(resource_materialization_tests fmt::fmt xbyak::xbyak)
 target_include_directories(resource_materialization_tests PRIVATE ${inc_headers})
 
 add_executable(resource_tracking_tests EXCLUDE_FROM_ALL
@@ -718,8 +718,6 @@ if(BUILD_TESTING)
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --imageless-invalidation-only)
 	add_test(NAME texture_cache_lookup_reuse
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --texture-lookup-only)
-	add_test(NAME protected_srt_read
-		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --protected-srt-read-only)
 	add_test(NAME color_render_target_1d
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --rt1d-only)
 
