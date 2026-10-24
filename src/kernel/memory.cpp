@@ -884,28 +884,6 @@ bool TryReadBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
 	return TryReadBacking(vaddr, data, size);
 }
 
-bool TryReadProtectedBacking(uint64_t vaddr, void* data, uint64_t size) {
-	if (g_gpu_resources == nullptr || !IsGpuAddressRange(vaddr, size) ||
-	    !Graphics::GuestGpu::IsGpuThread()) {
-		return false;
-	}
-	auto& buffers = GetGpuResources().GetBufferCache();
-	// Shader address writes are not tracked by range: they may change any byte.
-	if (buffers.HasGpuDirtyBytes(vaddr, size) || buffers.HasAddressWritesInFlight()) {
-		buffers.ReadMemory(vaddr, size);
-	}
-	return TryReadBacking(vaddr, data, size);
-}
-
-bool TryReadSettledBufferBacking(uint64_t vaddr, void* data, uint64_t size) {
-	if (g_gpu_resources != nullptr && IsGpuAddressRange(vaddr, size) &&
-	    (!Graphics::GuestGpu::IsGpuThread() ||
-	     GetGpuResources().GetBufferCache().HasGpuDirtyBytes(vaddr, size))) {
-		return false;
-	}
-	return TryReadBacking(vaddr, data, size);
-}
-
 uint64_t ClampRangeSize(uint64_t vaddr, uint64_t size) {
 	EXIT_IF(g_virtual_ranges == nullptr);
 
@@ -998,7 +976,7 @@ static bool GuestAllowsAccess(uint64_t vaddr, Graphics::PageFaultAccess access) 
 }
 
 bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr,
-                    GpuFaultCause cause, uint64_t fault_pc, uint64_t* resume_pc) noexcept {
+                    GpuFaultCause cause) noexcept {
 	if (g_gpu_resources == nullptr) {
 		return false;
 	}
@@ -1012,7 +990,7 @@ bool HandleGpuFault(Graphics::PageFaultAccess access, uint64_t fault_vaddr,
 	if (!GuestAllowsAccess(fault_vaddr, access)) {
 		return false;
 	}
-	return g_gpu_resources->HandleFault(access, fault_vaddr, fault_pc, resume_pc);
+	return g_gpu_resources->HandleFault(access, fault_vaddr);
 }
 
 struct PrtAperture {

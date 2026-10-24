@@ -93,9 +93,6 @@ public:
 	// until a GPU write or download.
 	void               MarkColorMetadataChecked(uint64_t vaddr, uint64_t size, uint32_t keys);
 	[[nodiscard]] bool IsColorMetadataChecked(uint64_t vaddr, uint64_t size, uint32_t keys) const;
-	// Shader address writes leave no dirty range: note the command buffer that records them.
-	void               NoteAddressWrites();
-	[[nodiscard]] bool HasAddressWritesInFlight();
 	void               ProcessFaultBuffer();
 	void               SynchronizeBda(const RangeSet& mapped);
 	void               QueueBdaSync(uint64_t vaddr, uint64_t size) {
