@@ -759,6 +759,7 @@ void EmitProgram(EmitterState& state) {
 	if (state.program.stage == ShaderType::Mesh) {
 		EmitMeshEntryPoint(state);
 	}
+	DefineBdaLoads(state);
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter
