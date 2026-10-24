@@ -54,7 +54,7 @@ uint32_t EmitExt(EmitterState& state, uint32_t type, uint32_t opcode,
 	return result;
 }
 
-uint32_t EmitF32ToF16RtzBits(EmitterState& state, uint32_t value) {
+uint32_t EmitF32ToF16RtzBitsBody(EmitterState& state, uint32_t value) {
 	// Native half conversion causes regressions; use compact integer RTZ conversion.
 	const auto bits = EmitBitcastF32ToU32(state, value);
 	const auto abs  = EmitAndConstant(state, bits, 0x7fffffffu);
@@ -92,6 +92,15 @@ uint32_t EmitF32ToF16RtzBits(EmitterState& state, uint32_t value) {
 	return EmitOrU32(state, sign, magnitude);
 }
 
+uint32_t EmitF32ToF16RtzBits(EmitterState& state, uint32_t value) {
+	if (state.f32_to_f16_rtz_function == 0u)
+		state.f32_to_f16_rtz_function = state.builder.AllocateId();
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpFunctionCall, TypeU32(state), result,
+	                          state.f32_to_f16_rtz_function, value);
+	return result;
+}
+
 uint32_t EmitF32ToU32(EmitterState& state, uint32_t src, bool signed_value) {
 	// Clamping first keeps the truncating conversion defined; NaN and values past the largest
 	// float below the integer limit are selected afterwards.
@@ -113,6 +122,20 @@ uint32_t EmitF32ToU32(EmitterState& state, uint32_t src, bool signed_value) {
 }
 
 } // namespace
+
+void DefineF32ToF16RtzFunction(EmitterState& state) {
+	if (state.f32_to_f16_rtz_function == 0u) return;
+	const auto signature = state.builder.Type(spv::OpTypeFunction, TypeU32(state), TypeF32(state));
+	const auto value = state.builder.AllocateId();
+	state.builder.AddName(state.f32_to_f16_rtz_function, "convert_f32_to_f16_rtz");
+	state.builder.AddFunction(spv::OpFunction, TypeU32(state), state.f32_to_f16_rtz_function,
+	                          spv::FunctionControlMaskNone, signature);
+	state.builder.AddFunction(spv::OpFunctionParameter, TypeF32(state), value);
+	EmitLabel(state, state.builder.AllocateId());
+	const auto result = EmitF32ToF16RtzBitsBody(state, value);
+	state.builder.AddFunction(spv::OpReturnValue, result);
+	state.builder.AddFunction(spv::OpFunctionEnd);
+}
 
 uint32_t EmitFPFma32(EmitterState& state, uint32_t a, uint32_t b, uint32_t c) {
 	const auto result = EmitGlsl<GLSLstd450Fma, IR::Type::F32>(state, a, b, c);

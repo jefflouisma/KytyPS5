@@ -120,6 +120,7 @@ struct EmitterState {
 	std::map<std::pair<uint32_t, uint32_t>, uint32_t> bitcasts;
 	std::array<uint32_t, 2>                          min_max_f32_functions {};
 	uint32_t                                        f16_to_f32_function = 0;
+	uint32_t                                        f32_to_f16_rtz_function = 0;
 	uint32_t                                         indirect_format_function = 0;
 	uint32_t                                         indirect_format_geometry_function = 0;
 	std::map<std::array<uint32_t, 3>, uint32_t>        indirect_buffer_load_functions;
@@ -558,6 +559,7 @@ void DefineGetBdaPointer(EmitterState& state);
 void DefineBdaLoads(EmitterState& state);
 void DefineMinMaxF32Functions(EmitterState& state);
 void DefineF16ToF32Function(EmitterState& state);
+void DefineF32ToF16RtzFunction(EmitterState& state);
 void DefineIndirectBufferFormats(ValueEmitContext& ctx);
 void DefineIndirectBufferLoads(ValueEmitContext& ctx);
 void DefineBvhIntersect(EmitterState& state);

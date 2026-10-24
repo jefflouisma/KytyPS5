@@ -16381,6 +16381,28 @@ void TestSpirvRepeatedEmission() {
         "split-wave re-emission retained native-wave definitions");
 }
 
+void TestSpirvSharedF16Rtz() {
+  using namespace ShaderRecompiler;
+  const uint32_t shader[] = {EncodeSopp(0x01)};
+  auto options = MakeCompileOptions(ShaderType::Compute);
+  auto compiled = RecompileForTest(shader, options);
+  IR::IREmitter emitter(compiled.program.blocks.front());
+  const auto lane = emitter.Emit(IR::ValueOpcode::LaneId, {});
+  const auto value = emitter.Emit(IR::ValueOpcode::BitCastF32U32, {lane});
+  emitter.Emit(IR::ValueOpcode::PackFloat2x16Rtz, {value, value});
+  emitter.Emit(IR::ValueOpcode::PackFloat2x16Rtz, {value, value});
+  compiled.program.shader_info_complete = false;
+  IR::CollectShaderInfo(compiled.program, options.input_info);
+  const auto shared = Spirv::EmitProgram(compiled.program, options.input_info);
+  CheckSpirvBinaryValidates(shared);
+  Check(SpirvInstructionOpcodeCount(shared, spv::OpFunction) == 2u &&
+            SpirvInstructionOpcodeCount(shared, spv::OpFunctionCall) == 4u &&
+            SpirvInstructionOpcodeCount(shared, spv::OpBitFieldInsert) == 2u,
+        "packed RTZ conversions did not share their scalar conversion body");
+  Check(DisassembleSpirvBinary(shared).find("PackHalf2x16") == std::string::npos,
+        "shared RTZ conversion used native rounding instead of the integer algorithm");
+}
+
 void TestSpirvSharedF16Conversion() {
   using namespace ShaderRecompiler;
   const uint32_t shader[] = {EncodeSopp(0x01)};
@@ -16833,6 +16855,7 @@ int main() {
   TestSpirvConditionVotes();
   TestSpirvSharedMinMax();
   TestSpirvSharedF16Conversion();
+  TestSpirvSharedF16Rtz();
   TestRepeatedExportsHaveOneInterface();
   TestNewShaderRecompilerSpirvSizeBaselines();
   TestDemandDrivenSpirvDeclarations();
