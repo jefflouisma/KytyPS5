@@ -918,6 +918,7 @@ static void RefreshShaders(CommandBuffer& buffer, const DrawCallInfo& draw,
 // three seconds.
 std::atomic<uint32_t> g_debug_runtime_flags {0}; // DEBUG ONLY: 1 cpu_indirect, 2 unsized_index
 namespace {
+void DebugProbeArm(const float rect[4]);
 struct DebugDrawFilter {
 	std::mutex                                   mutex;
 	std::unordered_set<uint64_t>                 skip;
@@ -956,6 +957,10 @@ bool DebugSkipDraw(const DrawRenderState& state, bool indirect) {
 					std::string hex;
 					in >> hex;
 					f.skip.insert(std::stoull(hex, nullptr, 16));
+				} else if (word == "probe") {
+					float rect[4] {};
+					in >> rect[0] >> rect[1] >> rect[2] >> rect[3];
+					DebugProbeArm(rect);
 				} else if (word == "dump") {
 					f.dumping    = true;
 					f.dump_until = now + std::chrono::seconds(3);
@@ -991,6 +996,165 @@ bool DebugSkipDraw(const DrawRenderState& state, bool indirect) {
 		}
 	}
 	return f.skip.contains(vs_hash);
+}
+} // namespace
+
+namespace {
+
+// DEBUG ONLY: pixel probe. "probe X0 Y0 X1 Y1" (fractions of the render target) scissors every
+// draw for 150 ms to that rectangle inside an occlusion query, then logs the draws that wrote
+// samples there and dumps their index and vertex buffers.
+struct DebugProbe {
+	std::mutex                            mutex;
+	bool                                  armed      = false;
+	bool                                  pending    = false;
+	bool                                  reset_done = false;
+	float                                 rect[4] {};
+	std::chrono::steady_clock::time_point until {}, read_at {};
+	vk::QueryPool                         pool = nullptr;
+	uint32_t                              next = 0;
+	struct Entry {
+		uint32_t                                   query = 0;
+		std::string                                text;
+		uint64_t                                   ib_addr = 0, ib_size = 0;
+		std::vector<std::pair<uint64_t, uint64_t>> vbs;
+	};
+	std::vector<Entry> entries;
+};
+DebugProbe         g_debug_probe;
+constexpr uint32_t DebugProbeCapacity = 32768;
+
+void DebugProbeArm(const float rect[4]) {
+	auto&           p = g_debug_probe;
+	std::lock_guard lock(p.mutex);
+	std::copy(rect, rect + 4, p.rect);
+	p.armed      = true;
+	p.pending    = false;
+	p.reset_done = false;
+	p.next       = 0;
+	p.entries.clear();
+	p.until = std::chrono::steady_clock::now() + std::chrono::milliseconds(150);
+}
+
+void DebugProbeDumpBytes(const std::string& name, uint64_t addr, uint64_t size) {
+	if (addr == 0 || size == 0 || size > (64ull << 20u)) {
+		return;
+	}
+	std::filesystem::create_directories("/Volumes/4TB_Drive/tmp/ps5plus-dev/probe");
+	std::ofstream out("/Volumes/4TB_Drive/tmp/ps5plus-dev/probe/" + name, std::ios::binary);
+	out.write(reinterpret_cast<const char*>(addr), static_cast<std::streamsize>(size));
+}
+
+int32_t DebugProbeBegin(RenderContext& ctx, vk::CommandBuffer cmd, const RenderState& rendering,
+                        const DrawRenderState& state, const DrawCallInfo& draw,
+                        const DrawEmitInfo& emit, const DrawIndexBufferSource& index_source) {
+	auto&           p = g_debug_probe;
+	std::lock_guard lock(p.mutex);
+	const auto      now    = std::chrono::steady_clock::now();
+	auto&           device = ctx.GetGraphics().device;
+	if (p.pending && now >= p.read_at) {
+		p.pending = false;
+		std::vector<uint64_t> samples(p.next, 0);
+		if (p.next != 0) {
+			(void)device.getQueryPoolResults(
+			    p.pool, 0, p.next, samples.size() * sizeof(uint64_t), samples.data(),
+			    sizeof(uint64_t), vk::QueryResultFlagBits::e64 | vk::QueryResultFlagBits::eWait);
+		}
+		std::string text = fmt::format("PROBE draws={}\n", p.next);
+		uint32_t    hit  = 0;
+		for (const auto& e: p.entries) {
+			if (samples[e.query] == 0) {
+				continue;
+			}
+			text += fmt::format("PROBEHIT {} samples={} {}\n", hit, samples[e.query], e.text);
+			DebugProbeDumpBytes(fmt::format("hit{}_ib.bin", hit), e.ib_addr, e.ib_size);
+			for (size_t i = 0; i < e.vbs.size(); i++) {
+				DebugProbeDumpBytes(fmt::format("hit{}_vb{}.bin", hit, i), e.vbs[i].first,
+				                    e.vbs[i].second);
+			}
+			hit++;
+		}
+		::Log::WriteToConsoleAndLog(text);
+		p.entries.clear();
+		p.next       = 0;
+		p.reset_done = false;
+	}
+	if (!p.armed) {
+		return -1;
+	}
+	if (now >= p.until) {
+		p.armed   = false;
+		p.pending = true;
+		p.read_at = now + std::chrono::milliseconds(1500);
+		return -1;
+	}
+	if (p.next >= DebugProbeCapacity || rendering.width == 0 || rendering.height == 0) {
+		return -1;
+	}
+	if (p.pool == nullptr) {
+		vk::QueryPoolCreateInfo info {};
+		info.queryType  = vk::QueryType::eOcclusion;
+		info.queryCount = DebugProbeCapacity;
+		(void)device.createQueryPool(&info, nullptr, &p.pool);
+	}
+	if (!p.reset_done) {
+		ctx.GetCommandScheduler().EndRendering();
+		cmd.resetQueryPool(p.pool, 0, DebugProbeCapacity);
+		ctx.GetCommandScheduler().BeginRendering(rendering);
+		p.reset_done = true;
+	}
+	const auto       x0 = static_cast<int32_t>(p.rect[0] * static_cast<float>(rendering.width));
+	const auto       y0 = static_cast<int32_t>(p.rect[1] * static_cast<float>(rendering.height));
+	const auto       x1 = static_cast<int32_t>(p.rect[2] * static_cast<float>(rendering.width));
+	const auto       y1 = static_cast<int32_t>(p.rect[3] * static_cast<float>(rendering.height));
+	const vk::Rect2D rect {{x0, y0},
+	                       {static_cast<uint32_t>(std::max(1, x1 - x0)),
+	                        static_cast<uint32_t>(std::max(1, y1 - y0))}};
+	cmd.setScissor(0, 1, &rect);
+	const auto query = p.next++;
+	cmd.beginQuery(p.pool, query, {});
+
+	DebugProbe::Entry e;
+	e.query          = query;
+	const auto& vs   = state.vertex_info[0];
+	const auto  vsh  = vs.stage.program != nullptr ? vs.stage.program->shader_hash : 0;
+	const auto  psh  = state.ps_active && state.ps_input_info.stage.program != nullptr
+	                       ? state.ps_input_info.stage.program->shader_hash
+	                       : 0;
+	e.text = fmt::format("vs={:016x} ps={:016x} rt={}x{} count={} inst={} first_inst={} "
+	                     "indexed={} indirect={} voff={} ib={:x}/{}/{}b",
+	                     vsh, psh, rendering.width, rendering.height, draw.index_count,
+	                     draw.instance_count, draw.first_instance, draw.IsIndexed() ? 1 : 0,
+	                     emit.indirect.address != 0 ? 1 : 0, emit.vertex_offset,
+	                     index_source.address, index_source.size,
+	                     index_source.guest_element_size);
+	e.ib_addr = index_source.address;
+	e.ib_size = index_source.size;
+	for (int i = 0; i < vs.buffers_num; i++) {
+		const auto& b = vs.buffers[i];
+		e.text += fmt::format(" vb{}=[{:x} stride={} n={} inst={}]", i, b.addr, b.stride,
+		                      b.num_records, b.fetch_index);
+		e.vbs.emplace_back(b.addr, static_cast<uint64_t>(b.stride) * b.num_records);
+	}
+	for (int i = 0; i < vs.resources_num; i++) {
+		const auto& r = vs.resources[i];
+		e.text += fmt::format(" a{}=[vb{} off={} w3={:08x} reg={}]", i,
+		                      vs.resources_dst[i].buffer_index,
+		                      r.Base48() - vs.buffers[vs.resources_dst[i].buffer_index].addr,
+		                      r.fields[3], vs.resources_dst[i].register_start);
+	}
+	p.entries.push_back(std::move(e));
+	return static_cast<int32_t>(query);
+}
+
+void DebugProbeEnd(vk::CommandBuffer cmd, int32_t query, const DynamicState& dynamic_state) {
+	if (query < 0) {
+		return;
+	}
+	cmd.endQuery(g_debug_probe.pool, static_cast<uint32_t>(query));
+	if (dynamic_state.num_scissors != 0) {
+		cmd.setScissor(0, dynamic_state.num_scissors, dynamic_state.scissors.data());
+	}
 }
 } // namespace
 
@@ -1380,6 +1544,8 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 	m_context.GetCommandScheduler().BeginRendering(rendering);
 	vk_buffer.bindPipeline(vk::PipelineBindPoint::eGraphics, pipeline.pipeline);
+	const auto debug_probe_query =
+	    DebugProbeBegin(m_context, vk_buffer, rendering, state, draw, emit, index_source);
 	if (!draw.IsIndexed()) {
 		SetDrawDebugPhase(buffer, submit_id, draw, 0x500u);
 	}
@@ -1394,6 +1560,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 		vk_buffer.drawIndirect(args_buffer.first->Handle(), args_buffer.second,
 		                       emit.indirect.count, emit.indirect.stride);
 	}
+	DebugProbeEnd(vk_buffer, debug_probe_query, dynamic_state);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::Draws);
 	Common::DebugCounters::Add(Common::DebugCounters::Counter::DrawInstances, draw.instance_count);
 	m_context.GetBufferCache().RecordPendingWrites(
