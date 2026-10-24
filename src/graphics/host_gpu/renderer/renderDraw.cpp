@@ -649,7 +649,6 @@ struct DrawIndexBufferSource {
 struct PreparedIndexBuffer {
 	vk::Buffer     buffer = nullptr;
 	vk::DeviceSize offset = 0;
-	vk::DeviceSize size   = 0;
 	vk::IndexType  type   = vk::IndexType::eUint16;
 };
 
@@ -978,7 +977,6 @@ static PreparedIndexBuffer PrepareIndexBuffer(CommandBuffer&               buffe
 		return prepared;
 	}
 	prepared.type = source.type;
-	prepared.size = source.size;
 	if (source.host_data != nullptr) {
 		auto& stream = buffer.GetContext().GetBufferCache().GetUtilityBuffer(MemoryUsage::Stream);
 		prepared.offset = stream.Copy(source.host_data, source.size, 16);
@@ -1004,23 +1002,11 @@ static void CommitVertexBuffers(vk::CommandBuffer            vk_buffer,
 	}
 }
 
-// With a sized binding and robustBufferAccess2, indices past the binding read as zero, as the
-// hardware index fetcher returns 0 past INDEX_BUFFER_SIZE.
-static bool SizedIndexBindings(const GraphicContext& graphics) {
-	return graphics.maintenance5_enabled && graphics.robust_buffer_access2_enabled;
-}
-
-static void CommitIndexBuffer(const GraphicContext& graphics, vk::CommandBuffer vk_buffer,
-                              const PreparedIndexBuffer& prepared) {
+static void CommitIndexBuffer(vk::CommandBuffer vk_buffer, const PreparedIndexBuffer& prepared) {
 	if (prepared.buffer == nullptr) {
 		return;
 	}
-	if (SizedIndexBindings(graphics)) {
-		vk_buffer.bindIndexBuffer2KHR(prepared.buffer, prepared.offset, prepared.size,
-		                              prepared.type);
-	} else {
-		vk_buffer.bindIndexBuffer(prepared.buffer, prepared.offset, prepared.type);
-	}
+	vk_buffer.bindIndexBuffer(prepared.buffer, prepared.offset, prepared.type);
 }
 
 static void LogDrawStateIfNeeded(const CommandBuffer& buffer, const DrawCallInfo& draw,
@@ -1239,7 +1225,7 @@ void RenderExecutor::ExecutePreparedDraw(uint64_t submit_id, CommandBuffer& buff
 	}
 	CommitBindings(buffer, vk::PipelineBindPoint::eGraphics, pipeline, stages);
 	if (!mesh_active) {
-		CommitIndexBuffer(m_context.GetGraphics(), vk_buffer, index_binding);
+		CommitIndexBuffer(vk_buffer, index_binding);
 	}
 	using ShaderRecompiler::IR::PushData;
 	const auto draw_stages =
@@ -1369,11 +1355,6 @@ bool RenderExecutor::DrawIndex(uint64_t submit_id, CommandBuffer& buffer,
 	Common::LockGuard lock(m_context.GetMutex());
 	if (args.index_count == 0 || (args.instance_count == 0 && args.indirect.address == 0)) {
 		return true;
-	}
-	// GPU-read records may count indices past INDEX_BUFFER_SIZE, which read as zero only through
-	// a sized binding. Without one, the command processor reads and clamps the records.
-	if (args.indirect.address != 0 && !SizedIndexBindings(m_context.GetGraphics())) {
-		return false;
 	}
 
 	if (ConsumeMetadataColorOperation(buffer, args.render_target_slice_offset) ||

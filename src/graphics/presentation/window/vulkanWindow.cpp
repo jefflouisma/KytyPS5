@@ -529,13 +529,6 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		provoking_vertex.pNext = supported_features2.pNext;
 		supported_features2.pNext = &provoking_vertex;
 	}
-	const bool maintenance5_extension =
-	    HasExtension(device_extensions, VK_KHR_MAINTENANCE_5_EXTENSION_NAME);
-	vk::PhysicalDeviceMaintenance5FeaturesKHR maintenance5 {};
-	if (maintenance5_extension) {
-		maintenance5.pNext = supported_features2.pNext;
-		supported_features2.pNext = &maintenance5;
-	}
 	const bool maintenance8_extension =
 	    HasExtension(device_extensions, VK_KHR_MAINTENANCE_8_EXTENSION_NAME);
 	vk::PhysicalDeviceMaintenance8FeaturesKHR maintenance8 {};
@@ -629,12 +622,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	graphics.attachment_feedback_loop_enabled =
 	    feedback_extensions && feedback_layout.attachmentFeedbackLoopLayout &&
 	    feedback_dynamic.attachmentFeedbackLoopDynamicState;
-	graphics.maintenance5_enabled = maintenance5_extension && maintenance5.maintenance5;
 	graphics.maintenance8_enabled = maintenance8_extension && maintenance8.maintenance8;
 	graphics.conditional_rendering_enabled =
 	    conditional_rendering_extension && conditional_rendering.conditionalRendering;
-	LOGF("Vulkan maintenance5 support: %s\n",
-	     graphics.maintenance5_enabled ? "true" : "false");
 	LOGF("Vulkan maintenance8 support: %s\n",
 	     graphics.maintenance8_enabled ? "true" : "false");
 	LOGF("Vulkan depth feedback support: %s\n",
@@ -708,7 +698,6 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	robustness2.robustBufferAccess2 = supported_robustness2.robustBufferAccess2;
 	robustness2.robustImageAccess2  = supported_robustness2.robustImageAccess2;
 	robustness2.nullDescriptor      = VK_TRUE;
-	graphics.robust_buffer_access2_enabled = robustness2.robustBufferAccess2 == VK_TRUE;
 
 	auto features13 = WindowContext::RequiredVulkan13Features();
 	features13.pNext = &robustness2;
@@ -716,10 +705,9 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 	features13.subgroupSizeControl =
 	    graphics.compute_subgroup_size_control_enabled ? VK_TRUE : VK_FALSE;
 
-	LOGF("Vulkan robustness: robustImageAccess=%s robustImageAccess2=%s robustBufferAccess2=%s\n",
+	LOGF("Vulkan robustness: robustImageAccess=%s robustImageAccess2=%s\n",
 	     features13.robustImageAccess == VK_TRUE ? "true" : "false",
-	     robustness2.robustImageAccess2 == VK_TRUE ? "true" : "false",
-	     robustness2.robustBufferAccess2 == VK_TRUE ? "true" : "false");
+	     robustness2.robustImageAccess2 == VK_TRUE ? "true" : "false");
 
 	vk::DeviceCreateInfo create_info {};
 	vk::PhysicalDeviceMeshShaderFeaturesEXT mesh_features {};
@@ -739,10 +727,6 @@ static vk::Device VulkanCreateDevice(GraphicContext& graphics,
 		image_atomic_int64.pNext = const_cast<void*>(create_info.pNext);
 		image_atomic_int64.sparseImageInt64Atomics = VK_FALSE;
 		create_info.pNext = &image_atomic_int64;
-	}
-	if (graphics.maintenance5_enabled) {
-		maintenance5.pNext = const_cast<void*>(create_info.pNext);
-		create_info.pNext = &maintenance5;
 	}
 	if (graphics.maintenance8_enabled) {
 		maintenance8.pNext = const_cast<void*>(create_info.pNext);
@@ -1123,8 +1107,7 @@ void WindowContext::CreateVulkan() {
 			device_extensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
 			graphic_ctx.memory_budget_ext_enabled = true;
 		}
-		for (const auto* extension: {VK_KHR_MAINTENANCE_5_EXTENSION_NAME,
-		                             VK_KHR_MAINTENANCE_8_EXTENSION_NAME,
+		for (const auto* extension: {VK_KHR_MAINTENANCE_8_EXTENSION_NAME,
 		                             VK_EXT_SHADER_IMAGE_ATOMIC_INT64_EXTENSION_NAME,
 		                             VK_EXT_PROVOKING_VERTEX_EXTENSION_NAME,
 		                             VK_EXT_MESH_SHADER_EXTENSION_NAME,
