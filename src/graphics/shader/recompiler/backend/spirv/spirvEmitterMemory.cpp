@@ -209,8 +209,7 @@ void RecordBdaFault(EmitterState& state, uint32_t page) {
 	            group);
 }
 
-uint32_t LoadBdaDword(ValueEmitContext& ctx, uint32_t address, bool coherent = false) {
-	auto&      state   = ctx.state;
+uint32_t LoadBdaDwordBody(EmitterState& state, uint32_t address, bool coherent) {
 	const auto bda     = GetBdaPointer(state, address);
 	const auto present =
 	    Binary(state, spv::OpINotEqual, TypeBool(state), bda, ConstantU64(state, 0));
@@ -240,6 +239,15 @@ uint32_t LoadBdaDword(ValueEmitContext& ctx, uint32_t address, bool coherent = f
 		                          alignment);
 		return value;
 	});
+}
+
+uint32_t LoadBdaDword(ValueEmitContext& ctx, uint32_t address, bool coherent = false) {
+	auto& state = ctx.state;
+	auto& function = state.bda_load_functions[coherent ? 1u : 0u];
+	if (function == 0u) function = state.builder.AllocateId();
+	const auto result = state.builder.AllocateId();
+	state.builder.AddFunction(spv::OpFunctionCall, TypeU32(state), result, function, address);
+	return result;
 }
 
 uint32_t LoadBda(ValueEmitContext& ctx, uint32_t address, uint32_t active, uint32_t bits,
@@ -1267,6 +1275,25 @@ uint32_t GetBdaPointer(EmitterState& state, uint32_t address) {
 	state.builder.AddFunction(spv::OpFunctionCall, TypeU64(state), result,
 	                          state.bda_pointer_function, address);
 	return result;
+}
+
+void DefineBdaLoads(EmitterState& state) {
+	// Keep the page lookup, missing-page guard and load together. Inlining just the
+	// lookup duplicates its fault-reporting CFG at every guest DWORD read.
+	for (size_t coherent = 0; coherent < state.bda_load_functions.size(); ++coherent) {
+		const auto function = state.bda_load_functions[coherent];
+		if (function == 0u) continue;
+		const auto signature = state.builder.Type(spv::OpTypeFunction, TypeU32(state), TypeU64(state));
+		const auto address = state.builder.AllocateId();
+		state.builder.AddName(function, coherent ? "load_bda_dword_coherent" : "load_bda_dword");
+		state.builder.AddFunction(spv::OpFunction, TypeU32(state), function,
+		                          spv::FunctionControlDontInlineMask, signature);
+		state.builder.AddFunction(spv::OpFunctionParameter, TypeU64(state), address);
+		EmitLabel(state, state.builder.AllocateId());
+		const auto result = LoadBdaDwordBody(state, address, coherent != 0u);
+		state.builder.AddFunction(spv::OpReturnValue, result);
+		state.builder.AddFunction(spv::OpFunctionEnd);
+	}
 }
 
 void DefineIndirectBufferLoads(ValueEmitContext& ctx) {

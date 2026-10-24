@@ -5523,8 +5523,13 @@ void TestNewShaderRecompilerScalarMemoryBindingDomains() {
             raw.program, ShaderRecompiler::IR::ValueOpcode::LoadAddressU32,
             ShaderRecompiler::IR::ResourceKind::ScalarAddress) == 2u,
         "raw scalar load did not remain a live typed address operation");
-  Check(SpirvInstructionOpcodeCount(raw.spirv, 57) == 2u,
-        "aligned scalar DWORDs must each use one BDA lookup");
+  {
+    const auto source = DisassembleSpirvBinary(raw.spirv);
+    Check(CountSourceOccurrences(source, "OpFunctionCall %uint %load_bda_dword ") == 2u &&
+              CountSourceOccurrences(source, "OpFunctionCall %ulong %get_bda_pointer ") == 1u &&
+              CountSourceOccurrences(source, "OpFunction %uint DontInline") == 1u,
+          "aligned scalar DWORDs must share one checked load body and each call it once");
+  }
   Check(SpirvContainsOpcode(raw.spirv, 199),
         "raw scalar SOFFSET alignment was not emitted");
   CheckSpirvBinaryValidates(raw.spirv);

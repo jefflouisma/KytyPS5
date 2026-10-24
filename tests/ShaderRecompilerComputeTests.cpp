@@ -35625,6 +35625,7 @@ void CheckSharedIndirectBufferLoads(VulkanHarness &vulkan) {
         }
       std::map<u32, std::string> functions;
       u32 function = 0, bda = 0, inline_reads = 0;
+      std::set<u32> bda_loads;
       for (size_t offset = 5; offset < compiled.spirv.size();) {
         const auto words = std::span(compiled.spirv).subspan(offset, compiled.spirv[offset] >> 16u);
         const auto opcode = static_cast<spv::Op>(words[0] & 0xffffu);
@@ -35632,6 +35633,7 @@ void CheckSharedIndirectBufferLoads(VulkanHarness &vulkan) {
           const std::string_view name(reinterpret_cast<const char *>(words.data() + 2));
           if (name.starts_with("load_indirect_buffer_")) functions.emplace(words[1], name);
           if (name == "get_bda_pointer") bda = words[1];
+          if (name == "load_bda_dword" || name == "load_bda_dword_coherent") bda_loads.insert(words[1]);
         }
         if (opcode == spv::OpFunction) {
           function = words[2];
@@ -35639,10 +35641,13 @@ void CheckSharedIndirectBufferLoads(VulkanHarness &vulkan) {
         }
         if (opcode == spv::OpFunctionCall) {
           if (functions.contains(words[3])) ++profiles[functions.at(words[3])].calls;
-          if (words[3] == bda) {
+          if (bda_loads.contains(words[3])) {
             if (functions.contains(function)) ++profiles[functions.at(function)].reads;
             else ++inline_reads;
           }
+          if (words[3] == bda)
+            Require(test.name, "shared BDA load body", bda_loads.contains(function),
+                    "physical read bypassed the shared checked load");
         }
         offset += words.size();
       }
