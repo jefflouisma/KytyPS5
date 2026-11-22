@@ -159,6 +159,11 @@ uint32_t TypePhysicalU32Pointer(EmitterState& state) {
 	return TypePointer(state, spv::StorageClassPhysicalStorageBuffer, TypeU32(state));
 }
 
+uint32_t TypePhysicalU32BufferPointer(EmitterState& state) {
+	return TypePointer(state, spv::StorageClassPhysicalStorageBuffer,
+	                   StorageBufferType(state, state.storage_buffers[2]));
+}
+
 uint32_t TypePushConstantElementPointer(EmitterState& state) {
 	return TypePointer(state, spv::StorageClassPushConstant, TypeU32(state));
 }
@@ -258,8 +263,12 @@ void DefineDescriptors(EmitterState& state) {
 		bindings.dispatch_thread_dword = bindings.memory_offset_dword;
 		bindings.memory_offset_dword += 3u;
 	}
+	if (info.ray_query) {
+		bindings.ray_query_dword = bindings.memory_offset_dword;
+		bindings.memory_offset_dword += 2u;
+	}
 	bindings.push_data_start_dword =
-	    IR::PushData::StartFor(bindings.push_data_start_dword, bindings.ShaderDataDwords());
+	    state.push_data.StartFor(bindings.ShaderDataDwords(), state.program.stage);
 	counts[static_cast<size_t>(Kind::ShaderData)] =
 	    bindings.ShaderDataDwords() != 0 && !bindings.UsesPushData();
 	if (state.program.bindings.UsesPushData() || state.program.stage == ShaderType::Mesh ||
@@ -402,47 +411,23 @@ uint32_t GlslStd450(EmitterState& state) {
 	return state.builder.Import("GLSL.std.450");
 }
 
-VertexInputScalarKind VertexParameterScalarKind(const EmitterState& state, uint32_t location) {
+Format::ComponentType VertexParameterScalarKind(const EmitterState& state, uint32_t location) {
 	if ((state.program.stage != ShaderType::Vertex && state.program.stage != ShaderType::Local) ||
 	    location >= ShaderVertexInputInfo::RES_MAX ||
 	    location >= static_cast<uint32_t>(state.input_info.vertex->resources_num)) {
-		return VertexInputScalarKind::Float;
+		return Format::ComponentType::Float;
 	}
-
-	switch (state.input_info.vertex->resources[location].Format()) {
-		case Prospero::BufferFormat::k8UInt:
-		case Prospero::BufferFormat::k16UInt:
-		case Prospero::BufferFormat::k8_8UInt:
-		case Prospero::BufferFormat::k32UInt:
-		case Prospero::BufferFormat::k16_16UInt:
-		case Prospero::BufferFormat::k8_8_8_8UInt:
-		case Prospero::BufferFormat::k32_32UInt:
-		case Prospero::BufferFormat::k16_16_16_16UInt:
-		case Prospero::BufferFormat::k32_32_32UInt:
-		case Prospero::BufferFormat::k32_32_32_32UInt: return VertexInputScalarKind::Uint;
-		case Prospero::BufferFormat::k8SInt:
-		case Prospero::BufferFormat::k16SInt:
-		case Prospero::BufferFormat::k8_8SInt:
-		case Prospero::BufferFormat::k32SInt:
-		case Prospero::BufferFormat::k16_16SInt:
-		case Prospero::BufferFormat::k8_8_8_8SInt:
-		case Prospero::BufferFormat::k32_32SInt:
-		case Prospero::BufferFormat::k16_16_16_16SInt:
-		case Prospero::BufferFormat::k32_32_32SInt:
-		case Prospero::BufferFormat::k32_32_32_32SInt: return VertexInputScalarKind::Sint;
-		default: return VertexInputScalarKind::Float;
-	}
+	return Format::GetFormatComponentType(state.input_info.vertex->resources[location].Format());
 }
 
 uint32_t VertexParameterComponentCount(const InputBinding& input) {
 	return std::clamp(input.component_count, 1u, 4u);
 }
 
-uint32_t VertexParameterScalarType(EmitterState& state, VertexInputScalarKind kind) {
+uint32_t VertexParameterScalarType(EmitterState& state, Format::ComponentType kind) {
 	switch (kind) {
-		case VertexInputScalarKind::Sint: return TypeI32(state);
-		case VertexInputScalarKind::Uint: return TypeU32(state);
-		case VertexInputScalarKind::Float:
+		case Format::ComponentType::Sint: return TypeI32(state);
+		case Format::ComponentType::Uint: return TypeU32(state);
 		default: return TypeF32(state);
 	}
 }
@@ -476,6 +461,8 @@ uint32_t BuiltInForInput(IR::StageInputKind kind) {
 		case IR::StageInputKind::LocalInvocationId: return spv::BuiltInLocalInvocationId;
 		case IR::StageInputKind::LocalInvocationIndex: return spv::BuiltInLocalInvocationIndex;
 		case IR::StageInputKind::GlobalInvocationId: return spv::BuiltInGlobalInvocationId;
+		case IR::StageInputKind::BaseVertex: return spv::BuiltInBaseVertex;
+		case IR::StageInputKind::BaseInstance: return spv::BuiltInBaseInstance;
 		default: return UINT32_MAX;
 	}
 }
@@ -526,7 +513,9 @@ void DefineInputs(EmitterState& state) {
 			case IR::StageInputKind::PrimitiveId:
 			case IR::StageInputKind::InstanceIndex:
 			case IR::StageInputKind::Layer:
-			case IR::StageInputKind::SampleId: type = TypeI32(state); break;
+			case IR::StageInputKind::SampleId:
+			case IR::StageInputKind::BaseVertex:
+			case IR::StageInputKind::BaseInstance: type = TypeI32(state); break;
 			case IR::StageInputKind::WorkgroupId:
 			case IR::StageInputKind::NumWorkgroups:
 			case IR::StageInputKind::LocalInvocationId:
@@ -594,6 +583,13 @@ void DefineInputs(EmitterState& state) {
 		if (state.program.stage == ShaderType::Pixel) {
 			state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationFlat);
 		}
+	}
+	if (state.program.info.helper_invocation) {
+		const auto variable = DefineInterfaceVariable(state, TypeBool(state), spv::StorageClassInput,
+		                                              "gl_HelperInvocation");
+		state.helper_invocation_variable = variable;
+		state.builder.AddAnnotation(spv::OpDecorate, variable, spv::DecorationBuiltIn,
+		                            spv::BuiltInHelperInvocation);
 	}
 }
 
@@ -691,13 +687,15 @@ void DefineOutputs(EmitterState& state) {
 				break;
 			case IR::StageOutputKind::Parameter:
 			case IR::StageOutputKind::Mrt: {
-				const bool uint_output =
-				    binding.kind == IR::StageOutputKind::Mrt &&
-				    state.program.stage == ShaderType::Pixel &&
-				    binding.index < std::size(state.input_info.pixel->target_output_mode) &&
-				    (state.input_info.pixel->target_output_mode[binding.index] == 7u ||
-				     (state.input_info.pixel->target_packed_unorm_mask & (1u << binding.index)) != 0u);
-				const auto type = uint_output ? TypeU32Vector(state, 4) : TypeF32Vector(state, 4);
+				auto type = TypeF32Vector(state, 4);
+				if (binding.kind == IR::StageOutputKind::Mrt &&
+				    state.program.stage == ShaderType::Pixel && binding.index < 8u) {
+					// Packed UNorm stores its encoded bits.
+					const auto bit = 1u << binding.index;
+					type = (state.input_info.pixel->target_packed_unorm_mask & bit) != 0u
+					           ? TypeU32Vector(state, 4)
+					           : MrtOutputType(state, binding.index);
+				}
 				binding.variable_id = DefineInterfaceVariable(state, type, spv::StorageClassOutput,
 				                                              binding.debug_name.c_str());
 				const bool dual_source = binding.kind == IR::StageOutputKind::Mrt &&
@@ -739,12 +737,23 @@ void DefineModule(EmitterState& state) {
 		state.mesh_guest_func = state.builder.AllocateId();
 		state.builder.RequireCapability(spv::CapabilityMeshShadingEXT); // MeshShadingEXT
 		state.builder.RequireExtension("SPV_EXT_mesh_shader");
-		state.builder.AddExecutionMode(state.main_func,
-		                               spv::ExecutionModeOutputTrianglesEXT); // OutputTrianglesEXT
+		constexpr spv::ExecutionMode output_modes[] = {spv::ExecutionModeOutputPoints,
+		                                               spv::ExecutionModeOutputLinesEXT,
+		                                               spv::ExecutionModeOutputTrianglesEXT};
+		state.builder.AddExecutionMode(
+		    state.main_func,
+		    output_modes[state.input_info.vertex->mesh.output_primitive_size - 1u]);
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeOutputVertices,
 		                               state.input_info.vertex->mesh.max_vertices);
 		state.builder.AddExecutionMode(state.main_func, spv::ExecutionModeOutputPrimitivesEXT,
 		                               state.input_info.vertex->mesh.max_primitives);
+		if (state.input_info.vertex->indirect_draw) {
+			// The task shader's payload (gpu_mesh_indirect.task).
+			const auto count   = ConstantU32(state, IR::PushData::MeshTaskPayloadDwordCount);
+			state.mesh_payload = DefineInterfaceVariable(
+			    state, state.builder.Type(spv::OpTypeArray, TypeU32(state), count),
+			    spv::StorageClassTaskPayloadWorkgroupEXT, "payload");
+		}
 	}
 	if (state.program.stage == ShaderType::TessellationControl ||
 	    state.program.stage == ShaderType::TessellationEvaluation) {
@@ -761,7 +770,10 @@ void DefineModule(EmitterState& state) {
 	if (state.program.info.buffer_u16) {
 		state.builder.RequireCapability(spv::CapabilityStorageBuffer16BitAccess);
 	}
-	if (state.program.info.uses_dma || state.program.info.uses_image_heap) {
+	const bool physical_addresses =
+	    state.program.info.uses_dma || state.program.info.uses_image_heap ||
+	    state.program.info.uses_device_address || state.program.info.ray_query;
+	if (physical_addresses) {
 		state.builder.RequireCapability(spv::CapabilityInt64);
 		state.builder.RequireCapability(spv::CapabilityPhysicalStorageBufferAddresses);
 		state.builder.RequireExtension("SPV_KHR_physical_storage_buffer");
@@ -792,6 +804,14 @@ void DefineModule(EmitterState& state) {
 	}
 	if (InputVariableForKind(state, IR::StageInputKind::SampleId) != 0) {
 		state.builder.RequireCapability(spv::CapabilitySampleRateShading);
+	}
+	if (InputVariableForKind(state, IR::StageInputKind::BaseVertex) != 0 ||
+	    InputVariableForKind(state, IR::StageInputKind::BaseInstance) != 0) {
+		state.builder.RequireCapability(spv::CapabilityDrawParameters);
+	}
+	if (state.program.info.ray_query) {
+		state.builder.RequireCapability(spv::CapabilityRayQueryKHR);
+		state.builder.RequireExtension("SPV_KHR_ray_query");
 	}
 	if (state.program.info.image_gather_extended) {
 		state.builder.RequireCapability(spv::CapabilityImageGatherExtended);
@@ -829,9 +849,8 @@ void DefineModule(EmitterState& state) {
 		state.builder.RequireExtension("SPV_KHR_fragment_shader_barycentric");
 	}
 	state.builder.RequireExtension("SPV_KHR_float_controls");
-	state.builder.AddMemoryModel(state.program.info.uses_dma || state.program.info.uses_image_heap
-	                                 ? spv::AddressingModelPhysicalStorageBuffer64
-	                                 : spv::AddressingModelLogical,
+	state.builder.AddMemoryModel(physical_addresses ? spv::AddressingModelPhysicalStorageBuffer64
+	                                                : spv::AddressingModelLogical,
 	                             spv::MemoryModelGLSL450);
 	// GCN/RDNA arithmetic preserves 32-bit signed zero, infinity, and NaN. Declaring that
 	// contract prevents host compilers from treating synthesized IEEE values as finite.

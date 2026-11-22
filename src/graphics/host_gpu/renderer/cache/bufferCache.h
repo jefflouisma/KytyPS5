@@ -13,6 +13,7 @@
 
 #include <array>
 #include <map>
+#include <mutex>
 #include <span>
 #include <utility>
 #include <vector>
@@ -87,6 +88,7 @@ public:
 	// Cache-index and exact dirty-range queries require GPU-thread serialization.
 	[[nodiscard]] bool IsRegionRegistered(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool HasGpuDirtyBytes(uint64_t vaddr, uint64_t size);
+	[[nodiscard]] bool HasOnlyGpuDirtyBytes(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	// Color metadata the GPU found free of the clear keys in `keys` (bits of code >> 5) stays so
@@ -97,10 +99,10 @@ public:
 	void               NoteAddressWrites();
 	[[nodiscard]] bool HasAddressWritesInFlight();
 	void               ProcessFaultBuffer();
-	void               SynchronizeBda(const RangeSet& mapped);
-	void               QueueBdaSync(uint64_t vaddr, uint64_t size) {
-		m_memory_tracker.QueueBdaSync(vaddr, size);
-	}
+	// Uploads the CPU-dirty bytes of the queued ranges `mapped` covers behind one barrier pair.
+	void SynchronizeBda(const RangeSet& mapped);
+	// Queue after the range's state change becomes visible, or a drain could consume it first.
+	void               QueueBdaSync(uint64_t vaddr, uint64_t size);
 	void               RunGarbageCollector();
 	// Called after recording a draw or dispatch: the ranges bound for writing, and any address
 	// writes (which can reach untracked ranges), belong to the current command buffer.
@@ -109,10 +111,7 @@ public:
 private:
 	friend struct BufferCacheTestAccess;
 
-	bool IsBufferInvalid(BufferId id) const {
-		const auto* buffer = m_slot_buffers.try_get(id);
-		return buffer == nullptr || buffer->is_deleted;
-	}
+	bool IsBufferInvalid(BufferId id) const { return !id || m_slot_buffers[id].is_deleted; }
 
 	using BufferMap = std::map<uint64_t, BufferId>;
 	struct OverlapResult {
@@ -121,6 +120,12 @@ private:
 		uint64_t            begin;
 		uint64_t            end;
 		bool                has_stream_leap;
+	};
+
+	// Copies [previous upload's end, end) go to `buffer`.
+	struct BufferUpload {
+		Buffer* buffer;
+		size_t  end;
 	};
 
 	using PageTable = MultiLevelPageTable<BufferId, CACHING_PAGEBITS, 44, 20>;
@@ -137,9 +142,8 @@ private:
 	void DeleteBuffer(BufferId id);
 	[[nodiscard]] bool SynchronizeBuffer(Buffer& buffer, uint64_t vaddr, uint64_t size,
 	                                     bool is_written, bool is_texel_buffer);
-	void SynchronizeBuffersInRange(uint64_t vaddr, uint64_t size);
-	[[nodiscard]] vk::Buffer UploadCopies(Buffer& buffer, std::span<vk::BufferCopy> copies,
-	                                      uint64_t total_size);
+	void UploadCopies(std::span<const BufferUpload> uploads, std::span<vk::BufferCopy> copies,
+	                  uint64_t total_size);
 	[[nodiscard]] bool SynchronizeBufferFromImage(Buffer& buffer, uint64_t vaddr, uint64_t size);
 	// Synchronous downloads publish before returning; asynchronous callers wait before reuse.
 	template <bool async>
@@ -169,6 +173,8 @@ private:
 	uint64_t                                           m_unsubmitted_tick   = 0;
 	uint64_t                                           m_address_write_tick = 0;
 	MemoryTracker                                     m_memory_tracker;
+	std::mutex                                        m_bda_sync_mutex;
+	RangeSet                                          m_bda_sync;
 	StreamBuffer                                      m_staging_buffer;
 	StreamBuffer                                      m_stream_buffer;
 	StreamBuffer                                      m_download_buffer;

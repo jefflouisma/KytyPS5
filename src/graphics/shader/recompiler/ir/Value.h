@@ -33,14 +33,14 @@ public:
 	static Value F16(uint16_t bits);
 	static Value F32(float value);
 
-	[[nodiscard]] bool IsEmpty() const;
-	[[nodiscard]] bool IsImmediate() const;
+	[[nodiscard]] bool IsEmpty() const { return type == Type::Void; }
+	[[nodiscard]] bool IsImmediate() const { return type != Type::Opaque; }
 	[[nodiscard]] bool IsIdentity() const;
 	[[nodiscard]] bool IsPhi() const;
 	[[nodiscard]] Type GetType() const;
 
 	[[nodiscard]] Inst*     Instruction() const;
-	[[nodiscard]] Inst*     TryInstruction() const;
+	[[nodiscard]] Inst*     TryInstruction() const { return type == Type::Opaque ? inst : nullptr; }
 	[[nodiscard]] Inst*     ResolveInstruction() const;
 	[[nodiscard]] Value     Resolve() const;
 	[[nodiscard]] ScalarReg ScalarRegister() const;
@@ -77,23 +77,17 @@ class TypedValue: public Value {
 public:
 	TypedValue() = default;
 
-	template <Type other_type>
-	requires(TypesOverlap(type_, other_type))
-	TypedValue(const TypedValue<other_type>& value): Value(value) {}
-
 	explicit TypedValue(Value value): Value(value) {
 		EXIT_IF(!AreTypesCompatible(value.GetType(), type_));
 	}
 };
 
-using U1     = TypedValue<Type::U1>;
-using U8     = TypedValue<Type::U8>;
-using U16    = TypedValue<Type::U16>;
-using U32    = TypedValue<Type::U32>;
-using U64    = TypedValue<Type::U64>;
-using F16    = TypedValue<Type::F16>;
-using F32    = TypedValue<Type::F32>;
-using U32F32 = TypedValue<Type::U32 | Type::F32>;
+using U1  = TypedValue<Type::U1>;
+using U16 = TypedValue<Type::U16>;
+using U32 = TypedValue<Type::U32>;
+using U64 = TypedValue<Type::U64>;
+using F16 = TypedValue<Type::F16>;
+using F32 = TypedValue<Type::F32>;
 
 struct Use {
 	Inst*  user    = nullptr;
@@ -112,7 +106,7 @@ public:
 	Inst(Inst&&)                 = delete;
 	Inst& operator=(Inst&&)      = delete;
 
-	[[nodiscard]] ValueOpcode             GetOpcode() const;
+	[[nodiscard]] ValueOpcode             GetOpcode() const { return opcode; }
 	[[nodiscard]] Type                    GetType() const;
 	[[nodiscard]] bool                    MayHaveSideEffects() const;
 	[[nodiscard]] bool                    HasUses() const;
@@ -121,15 +115,11 @@ public:
 	[[nodiscard]] size_t                  NumPhiBlocks() const;
 	[[nodiscard]] Value                   Arg(size_t index) const;
 	[[nodiscard]] Block*                  PhiBlock(size_t index) const;
-	[[nodiscard]] Block*                  Parent() const;
-	[[nodiscard]] const std::vector<Use>& Uses() const;
-	// Runtime indices belong to the resource plan that owns this instruction.
-	[[nodiscard]] uint32_t EvaluationIndex(uint32_t& count) const {
-		if (evaluation_index == UINT32_MAX) {
-			evaluation_index = count++;
-		}
-		return evaluation_index;
-	}
+	[[nodiscard]] Block*                  Parent() const { return parent; }
+	[[nodiscard]] const std::vector<Use>& Uses() const { return uses; }
+	// SRT walker output index, assigned by the resource plan that owns this instruction.
+	[[nodiscard]] uint32_t WalkOutput() const { return walk_output; }
+	void SetWalkOutput(uint32_t index) const { walk_output = index; }
 	// Backend definitions belong to one emission. Wave64 emulation needs one per half.
 	[[nodiscard]] uint32_t Definition(uint32_t half) const { return definitions[half]; }
 	void SetDefinition(uint32_t half, uint32_t definition) const {
@@ -142,6 +132,8 @@ public:
 	void AddPhiOperand(Block* predecessor, Value value);
 	void ReplaceUsesWith(Value replacement, bool preserve = true);
 	void Invalidate();
+	// Drops the arguments without updating their use lists, for teardown that destroys both sides.
+	void DropArgs();
 
 	template <typename T>
 	requires(sizeof(T) <= sizeof(uint64_t) && std::is_trivially_copyable_v<T>)
@@ -161,6 +153,8 @@ public:
 private:
 	friend void EliminateDeadCode(const std::vector<Block*>& blocks);
 
+	template <typename Self>
+	static auto& ArgSlot(Self& self, size_t index);
 	void AddUse(Inst* used, size_t operand);
 	void RemoveUse(Inst* used, size_t operand);
 	void ClearArgs();
@@ -171,7 +165,7 @@ private:
 	ValueOpcode         opcode;
 	uint8_t             num_args;
 	bool                live = false;
-	mutable uint32_t    evaluation_index = UINT32_MAX;
+	mutable uint32_t    walk_output = UINT32_MAX;
 	mutable std::array<uint32_t, 2> definitions {};
 	uint64_t            flags;
 	Block*              parent = nullptr;
@@ -185,15 +179,7 @@ private:
 
 static_assert(sizeof(Inst) <= 120, "Inst operand and backend storage unintentionally increased");
 
-// Hot accessors of the resource walker are defined inline; they need the full Inst.
-inline bool Value::IsEmpty() const {
-	return type == Type::Void;
-}
-
-inline bool Value::IsImmediate() const {
-	return type != Type::Opaque;
-}
-
+// Called per operand by the IR passes and the resource walker; inline, as the build has no LTO.
 inline bool Value::IsIdentity() const {
 	return type == Type::Opaque && inst->GetOpcode() == ValueOpcode::Identity;
 }
@@ -202,40 +188,13 @@ inline bool Value::IsPhi() const {
 	return type == Type::Opaque && inst->GetOpcode() == ValueOpcode::Phi;
 }
 
-inline Inst* Value::TryInstruction() const {
-	return type == Type::Opaque ? inst : nullptr;
+inline Inst* Value::ResolveInstruction() const {
+	EXIT_IF(type != Type::Opaque);
+	return IsIdentity() ? inst->Arg(0).ResolveInstruction() : inst;
 }
 
 inline Value Value::Resolve() const {
-	// Identity chains are followed iteratively; the walker resolves every operand it visits.
-	Value value = *this;
-	while (value.IsIdentity()) {
-		value = value.inst->Arg(0);
-	}
-	return value;
-}
-
-inline Inst* Value::ResolveInstruction() const {
-	EXIT_IF(type != Type::Opaque);
-	// An identity may forward an immediate: fail fast as the recursive form did.
-	const auto value = Resolve();
-	EXIT_IF(value.type != Type::Opaque);
-	return value.inst;
-}
-
-inline bool Value::U1() const {
-	EXIT_IF(type != Type::U1);
-	return imm_u1;
-}
-
-inline uint8_t Value::U8() const {
-	EXIT_IF(type != Type::U8);
-	return imm_u8;
-}
-
-inline uint16_t Value::U16() const {
-	EXIT_IF(type != Type::U16);
-	return imm_u16;
+	return IsIdentity() ? inst->Arg(0).Resolve() : *this;
 }
 
 inline uint32_t Value::U32() const {
@@ -243,55 +202,21 @@ inline uint32_t Value::U32() const {
 	return imm_u32;
 }
 
-inline uint64_t Value::U64() const {
-	EXIT_IF(type != Type::U64);
-	return imm_u64;
-}
-
-inline uint16_t Value::F16Bits() const {
-	EXIT_IF(type != Type::F16);
-	return imm_u16;
-}
-
-inline float Value::F32Value() const {
-	EXIT_IF(type != Type::F32);
-	return std::bit_cast<float>(imm_u32);
-}
-
-inline ValueOpcode Inst::GetOpcode() const {
-	return opcode;
-}
-
 inline size_t Inst::NumArgs() const {
 	return num_args == PhiArity ? phi_args.size() : num_args;
 }
 
-inline bool Value::operator==(const Value& other) const {
-	if (type != other.type) {
-		return false;
+template <typename Self>
+auto& Inst::ArgSlot(Self& self, size_t index) {
+	EXIT_IF(index >= self.NumArgs());
+	if (self.num_args <= InlineArity) {
+		return self.fixed_args[index];
 	}
-	switch (type) {
-		case Type::Void: return true;
-		case Type::Opaque: return inst == other.inst;
-		case Type::ScalarReg: return scalar_reg == other.scalar_reg;
-		case Type::VectorReg: return vector_reg == other.vector_reg;
-		case Type::U1: return imm_u1 == other.imm_u1;
-		case Type::U8: return imm_u8 == other.imm_u8;
-		case Type::U16:
-		case Type::F16: return imm_u16 == other.imm_u16;
-		case Type::U32:
-		case Type::F32: return imm_u32 == other.imm_u32;
-		case Type::U64: return imm_u64 == other.imm_u64;
-		default: return false;
-	}
+	return self.num_args == PhiArity ? self.phi_args[index].second : self.large_args[index];
 }
 
 inline Value Inst::Arg(size_t index) const {
-	EXIT_IF(index >= NumArgs());
-	if (num_args <= InlineArity) {
-		return fixed_args[index];
-	}
-	return num_args == PhiArity ? phi_args[index].second : large_args[index];
+	return ArgSlot(*this, index);
 }
 
 } // namespace Libs::Graphics::ShaderRecompiler::IR

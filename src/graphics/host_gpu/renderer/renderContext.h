@@ -12,9 +12,11 @@
 #include "graphics/host_gpu/renderer/cache/textureCache.h"
 #include "graphics/host_gpu/renderer/commandScheduler.h"
 #include "graphics/host_gpu/renderer/gpuTimestamps.h"
+#include "graphics/host_gpu/renderer/occlusionQueries.h"
 #include "graphics/host_gpu/renderer/pipeline/descriptorHeap.h"
 #include "graphics/host_gpu/renderer/pipeline/imageHeap.h"
 #include "graphics/host_gpu/renderer/pipeline/pipelineCache.h"
+#include "graphics/host_gpu/renderer/rayTracing.h"
 #include "kernel/eventQueue.h"
 
 #include <memory>
@@ -32,7 +34,8 @@ class GuestGpu;
 
 class RenderContext {
 public:
-	explicit RenderContext(GraphicContext& graphics);
+	explicit RenderContext(GraphicContext&              graphics,
+	                       const std::filesystem::path& shader_store = ShaderStorePath());
 	~RenderContext();
 	KYTY_CLASS_NO_COPY(RenderContext);
 
@@ -57,6 +60,8 @@ public:
 	TextureCache&       GetTextureCache() { return m_texture_cache; }
 	GpuTimestamps&      GetGpuTimestamps() { return m_gpu_timestamps; }
 	RenderExecutor&     GetRenderExecutor() { return m_render_executor; }
+	OcclusionQueries&   GetOcclusionQueries() { return m_occlusion_queries; }
+	RayTracing*         GetRayTracing() { return m_ray_tracing.get(); } // With ray queries only.
 
 	// A read fault of a compiled SRT load sets *resume_pc instead of downloading the page.
 	[[nodiscard]] bool HandleFault(PageFaultAccess access, uint64_t fault_vaddr,
@@ -84,6 +89,9 @@ private:
 		int                                 event_id = 0;
 	};
 
+	// Waits for the image write-backs over the range's pages; returns whether any overlapped.
+	bool WaitWriteBacks(uint64_t vaddr, uint64_t size);
+
 	GraphicContext&           m_graphics;
 	Common::Mutex             m_mutex;
 	RenderExecutor            m_render_executor;
@@ -96,13 +104,15 @@ private:
 	TextureCache              m_texture_cache;
 	ImageHeap                 m_image_heap;
 	GpuTimestamps             m_gpu_timestamps;
+	OcclusionQueries          m_occlusion_queries;
 	mutable std::shared_mutex m_mapped_ranges_mutex;
 	RangeSet                  m_mapped_ranges;
 	std::mutex                m_gpu_mutex;
 	std::unique_ptr<GuestGpu> m_gpu;
 	VideoOut::VideoOutDriver* m_video_out = nullptr;
 	bool                      m_fault_process_pending = false;
-	bool                      m_bda_logged = false;
+
+	std::unique_ptr<RayTracing> m_ray_tracing;
 
 	Common::Mutex                        m_interrupt_mutex;
 	std::vector<InterruptEqRegistration> m_interrupt_eqs;

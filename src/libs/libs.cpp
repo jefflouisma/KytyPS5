@@ -92,6 +92,8 @@ LIB_DEFINE(InitFont_1);
 LIB_DEFINE(InitFontFt_1);
 LIB_DEFINE(InitAgcDriver_1);
 LIB_DEFINE(InitHmd2_1);
+LIB_DEFINE(InitJpegDec_1);
+LIB_DEFINE(InitJpegEnc_1);
 LIB_DEFINE(InitVrTracker2_1);
 LIB_DEFINE(InitLibKernel_1);
 LIB_DEFINE(InitNet_1);
@@ -132,6 +134,8 @@ void InitAll(Loader::SymbolDatabase* s) {
 	InitDeviceService_1(s);
 	InitUsbd_1(s);
 	InitHmd2_1(s);
+	InitJpegDec_1(s);
+	InitJpegEnc_1(s);
 	InitVrTracker2_1(s);
 	InitLibKernel_1(s);
 	LibMouse::InitMouse_1(s);
@@ -162,7 +166,7 @@ void InitAll(Loader::SymbolDatabase* s) {
 
 namespace LibContentExport {
 
-LIB_VERSION("ContentExport", 1, "ContentExport", 1, 1);
+LIB_NAME("ContentExport", "ContentExport");
 
 namespace ContentExport {
 
@@ -212,7 +216,7 @@ LIB_DEFINE(InitContentExport_1) {
 
 namespace LibContentSearch {
 
-LIB_VERSION("ContentSearch", 1, "ContentSearch", 1, 0);
+LIB_NAME("ContentSearch", "ContentSearch");
 
 namespace ContentSearch {
 
@@ -250,7 +254,7 @@ LIB_DEFINE(InitContentSearch_1) {
 
 namespace LibContentDelete {
 
-LIB_VERSION("ContentDelete", 1, "ContentDelete", 1, 1);
+LIB_NAME("ContentDelete", "ContentDelete");
 
 namespace ContentDelete {
 

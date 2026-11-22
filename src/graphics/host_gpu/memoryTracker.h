@@ -10,9 +10,7 @@
 #include <atomic>
 #include <memory>
 #include <mutex>
-#include <thread>
 #include <type_traits>
-#include <utility>
 #include <vector>
 
 namespace Libs::Graphics {
@@ -29,19 +27,11 @@ public:
 	[[nodiscard]] bool IsRegionCpuModified(uint64_t vaddr, uint64_t size);
 	[[nodiscard]] bool IsRegionGpuModified(uint64_t vaddr, uint64_t size);
 	void               MarkRegionAsCpuModified(uint64_t vaddr, uint64_t size);
-	void               MarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
 	void               UnmarkRegionAsGpuModified(uint64_t vaddr, uint64_t size);
-	void               UntrackMemory(uint64_t vaddr, uint64_t size);
-	// Queue after changing ownership; a concurrent drain must not consume an event
-	// before the dirty pages it describes become visible.
-	void                   QueueBdaSync(uint64_t vaddr, uint64_t size);
-	[[nodiscard]] RangeSet TakeBdaSync();
 	// Removes protection from a range and flushes GPU-owned data when required.
 	template <typename Flush>
 	void InvalidateRegion(uint64_t vaddr, uint64_t size, Flush&& on_flush) noexcept {
 		static_assert(std::is_invocable_v<Flush&>);
-		CheckNotInUploadCallback();
-
 		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
 			const bool should_flush = [&] {
 				// Perform both the GPU modification check and CPU state change with the lock in
@@ -51,14 +41,13 @@ public:
 				if (manager->IsModified<DirtySource::Gpu>(offset, bytes)) {
 					return true;
 				}
-				manager->ChangeState<DirtySource::Cpu, true>(manager->GetCpuAddr() + offset, bytes);
+				manager->ChangeState<DirtySource::Cpu, true>(offset, bytes);
 				return false;
 			}();
 			if (should_flush) {
 				on_flush();
 			}
 		});
-		QueueBdaSync(vaddr, size);
 	}
 #if KYTY_BUILD == KYTY_BUILD_DEBUG
 	void ValidateGpuDirtyPages(const RangeSet& dirty, uint64_t vaddr, uint64_t size,
@@ -73,17 +62,14 @@ public:
 	template <bool clear, typename Func>
 	void ForEachDownloadRange(uint64_t vaddr, uint64_t size, Func&& func) {
 		static_assert(std::is_nothrow_invocable_v<Func&, uint64_t, uint64_t>);
-		CheckNotInUploadCallback();
-		const OwnerScope owner(*this);
 		Iterate<false>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
-			if (!manager->IsModifiedUnlocked<DirtySource::Gpu>(offset, bytes)) {
+			if (!manager->IsModified<DirtySource::Gpu>(offset, bytes)) {
 				return;
 			}
 			std::scoped_lock lock(manager->lock);
-			const auto       address = manager->GetCpuAddr() + offset;
-			manager->template ForEachModifiedRange<DirtySource::Gpu, false>(address, bytes, func);
+			manager->ForEachModifiedRange<DirtySource::Gpu, false>(offset, bytes, func);
 			if constexpr (clear) {
-				manager->template ChangeState<DirtySource::Gpu, false>(address, bytes);
+				manager->ChangeState<DirtySource::Gpu, false>(offset, bytes);
 			}
 		});
 	}
@@ -93,17 +79,12 @@ public:
 	                        UploadFunc&& upload_func) {
 		static_assert(std::is_nothrow_invocable_v<RangeFunc&, uint64_t, uint64_t>);
 		static_assert(std::is_nothrow_invocable_v<UploadFunc&>);
-		CheckNotInUploadCallback();
-		const OwnerScope owner(*this);
-		const auto* previous_upload_owner = std::exchange(s_upload_owner, this);
 		Iterate<true>(vaddr, size, [&](RegionManager* manager, uint64_t offset, uint64_t bytes) {
-			// A written range takes every lock: they stay held until it is marked GPU-dirty.
-			if (!is_written && !manager->IsModifiedUnlocked<DirtySource::Cpu>(offset, bytes)) {
+			if (!is_written && !manager->IsModified<DirtySource::Cpu>(offset, bytes)) {
 				return;
 			}
 			manager->lock.lock();
-			manager->ForEachModifiedRange<DirtySource::Cpu, true>(manager->GetCpuAddr() + offset,
-			                                                      bytes, range_func);
+			manager->ForEachModifiedRange<DirtySource::Cpu, true>(offset, bytes, range_func);
 			if (!is_written) {
 				manager->lock.unlock();
 			}
@@ -112,23 +93,14 @@ public:
 		if (is_written) {
 			Iterate<false>(vaddr, size,
 			               [](RegionManager* manager, uint64_t offset, uint64_t bytes) {
-				               manager->template ChangeState<DirtySource::Gpu, true>(
-				                   manager->GetCpuAddr() + offset, bytes);
+				               manager->ChangeState<DirtySource::Gpu, true>(offset, bytes);
 				               manager->lock.unlock();
 			               });
 		}
-		s_upload_owner = previous_upload_owner;
 	}
 
 private:
 	static constexpr size_t REGION_COUNT = TRACKER_ADDRESS_SIZE / TRACKER_REGION_SIZE;
-	inline static thread_local const MemoryTracker* s_upload_owner = nullptr;
-
-	void CheckNotInUploadCallback() const noexcept {
-		if (s_upload_owner == this) {
-			EXIT("memory tracker re-entered from upload callback\n");
-		}
-	}
 
 	template <bool create, typename Func>
 	bool Iterate(uint64_t vaddr, uint64_t size, Func&& func) {
@@ -160,22 +132,6 @@ private:
 		return false;
 	}
 
-#if KYTY_BUILD == KYTY_BUILD_DEBUG
-	// Uploads, downloads and GPU unmarks never overlap: the lock-free dirty reads rely on it.
-	class OwnerScope final {
-	public:
-		explicit OwnerScope(MemoryTracker& tracker) noexcept;
-		~OwnerScope();
-		KYTY_CLASS_NO_COPY(OwnerScope);
-
-	private:
-		MemoryTracker* m_tracker = nullptr;
-	};
-#else
-	struct OwnerScope final {
-		explicit OwnerScope(MemoryTracker& /*tracker*/) noexcept {}
-	};
-#endif
 
 	static void    ValidateRange(uint64_t vaddr, uint64_t size);
 	RegionManager* GetOrCreateRegion(uint64_t index);
@@ -183,12 +139,7 @@ private:
 	std::unique_ptr<std::atomic<RegionManager*>[]> m_regions;
 	std::vector<std::unique_ptr<RegionManager>>    m_region_storage;
 	std::mutex                                     m_region_mutex;
-	std::mutex                                     m_bda_sync_mutex;
-	RangeSet                                       m_bda_sync;
 	PageManager&                                   m_page_manager;
-#if KYTY_BUILD == KYTY_BUILD_DEBUG
-	std::atomic<std::thread::id> m_owner_thread {};
-#endif
 };
 
 } // namespace Libs::Graphics

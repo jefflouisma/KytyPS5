@@ -8,7 +8,7 @@
 
 namespace Libs::Graphics {
 
-enum class PageFaultAccess { Read, Write, Execute, Unknown };
+enum class PageFaultAccess { Read, Write, Execute };
 
 class PageManager final {
 public:
@@ -18,13 +18,12 @@ public:
 
 	KYTY_CLASS_NO_COPY(PageManager);
 
-	[[nodiscard]] uint64_t GetPageSize() const;
-
-	template <bool track>
+	template <bool track, bool is_read = false>
 	void UpdatePageWatchers(uint64_t vaddr, uint64_t size);
 	template <bool track, bool is_read = false>
 	void UpdatePageWatchersForRegion(uint64_t base_addr, RegionBits& mask);
 	// True when every page of the range is protected by a watcher, so its faults are handled.
+	[[nodiscard]] uint64_t GetPageSize() const;
 	[[nodiscard]] bool IsWatched(uint64_t vaddr, uint64_t size) const;
 	// Writes data to the backing of a range no watcher protects. False, with nothing written, when
 	// a watcher protects it or it has no backing alias. A watcher registering meanwhile waits for

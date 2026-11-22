@@ -34,7 +34,7 @@ double GetTimeMs() {
 } // namespace Loader
 
 namespace Libs::LibKernel::FileSystem {
-void Mount(const std::filesystem::path& directory, const std::string& point) {
+void Mount(const std::filesystem::path& directory, const std::string& point, bool) {
 	g_mounted_directory = directory;
 	g_test_mounts[point] = directory;
 }
@@ -396,6 +396,80 @@ void TestClassicSavePaths() {
 	CHECK(Search(1) == names);
 }
 
+void TestBusyMountPreservesResult() {
+	Reset("BUSYMOUNT");
+	const auto name = DirName("slot");
+	struct SaveDataMount3 mount {};
+	mount.user_id    = 1;
+	mount.dir_name   = &name;
+	mount.mount_mode = 4;
+	mount.blocks     = 48;
+	SaveDataMountResult result {};
+	CHECK(SaveDataMount3(&mount, &result) == OK);
+	const std::string first_mount_point = result.mount_point.data;
+	CHECK(first_mount_point == "/savedata0");
+
+	mount.mount_mode = 32;
+	CHECK(SaveDataMount3(&mount, &result) == SAVE_DATA_ERROR_BUSY);
+	CHECK(result.mount_point.data == first_mount_point);
+	CHECK(g_test_mounts.contains(first_mount_point));
+	CHECK(SaveDataUmount2(0, &result.mount_point) == OK);
+}
+
+void TestConvert() {
+	Reset("CONVERT");
+	const auto             source = DirName("save");
+	const auto             memory = DirName("sce_sdmemory");
+	struct SaveDataConvert convert {};
+	convert.user_id      = 1;
+	convert.src_dir_name = &memory;
+	convert.dst_blocks   = 96;
+	CHECK(SaveDataConvert(&convert) == SAVE_DATA_ERROR_PARAMETER);
+	// A missing source fails at once.
+	convert.src_dir_name = &source;
+	CHECK(SaveDataConvert(&convert) == SAVE_DATA_ERROR_NOT_FOUND);
+	struct SaveDataMount3 mount {};
+	mount.user_id    = 1;
+	mount.dir_name   = &source;
+	mount.mount_mode = 4;
+	mount.blocks     = 96;
+	SaveDataMountResult mounted {};
+	CHECK(SaveDataMount3(&mount, &mounted) == OK);
+	CHECK(SaveDataConvert(&convert) == SAVE_DATA_ERROR_BUSY);
+	CHECK(SaveDataUmount2(0, &mounted.mount_point) == OK);
+	CHECK(SaveDataConvert(&convert) == SAVE_DATA_ERROR_NO_NEED_CONVERT);
+	convert.dst_blocks = 95;
+	CHECK(SaveDataConvert(&convert) == SAVE_DATA_ERROR_BLOCKS_FEWER_THAN_SRC);
+	convert.dst_dir_name = &source;
+	CHECK(SaveDataConvert(&convert) == SAVE_DATA_ERROR_EXISTS);
+	for (const uint64_t blocks: {47u, 16385u}) {
+		convert.dst_blocks = blocks;
+		CHECK(SaveDataConvert(&convert) == SAVE_DATA_ERROR_PARAMETER);
+	}
+	// A larger size converts before the call returns, and its event reports the result.
+	SaveDataEvent event {};
+	convert.dst_dir_name = nullptr;
+	convert.dst_blocks   = 128;
+	CHECK(SaveDataConvert(&convert) == OK);
+	CHECK(SaveDataGetEventResult(nullptr, &event) == OK);
+	CHECK(event.type == 5 && event.error_code == OK && event.user_id == 1 &&
+	      std::string(event.title_id.data) == "CONVERT" &&
+	      std::string(event.dir_name.data) == "save");
+	CHECK(SaveDataConvert(&convert) == SAVE_DATA_ERROR_NO_NEED_CONVERT);
+	// A new name renames the converted save, and the event names it.
+	const auto renamed   = DirName("renamed");
+	convert.dst_dir_name = &renamed;
+	convert.dst_blocks   = 256;
+	CHECK(SaveDataConvert(&convert) == OK);
+	CHECK(SaveDataGetEventResult(nullptr, &event) == OK);
+	CHECK(event.type == 5 && event.error_code == OK &&
+	      std::string(event.dir_name.data) == "renamed");
+	CHECK(SaveDataConvert(&convert) == SAVE_DATA_ERROR_NOT_FOUND);
+	convert.src_dir_name = &renamed;
+	convert.dst_dir_name = nullptr;
+	CHECK(SaveDataConvert(&convert) == SAVE_DATA_ERROR_NO_NEED_CONVERT);
+}
+
 void TestGuestSaveIsolation() {
 	Reset("MULTIUSER");
 	const auto name = DirName("slot");
@@ -461,6 +535,12 @@ void TestSaveAllocations() {
 		CHECK(SaveDataMount3(&invalid, &result) == SAVE_DATA_ERROR_PARAMETER);
 		CHECK(!fs::exists("_SaveData/CAPACITY/Options"));
 	}
+	struct SaveDataMount3 open_missing {};
+	open_missing.user_id = 1;
+	open_missing.dir_name = &names[0];
+	open_missing.mount_mode = 1;
+	SaveDataMountResult missing_result {};
+	CHECK(SaveDataMount3(&open_missing, &missing_result) == SAVE_DATA_ERROR_NOT_FOUND);
 	for (size_t i = 0; i < names.size(); i++) {
 		struct SaveDataMount3 mount {};
 		mount.user_id = 1;
@@ -491,9 +571,11 @@ void TestSaveAllocations() {
 		struct SaveDataMount3 mount {};
 		mount.user_id = 1;
 		mount.dir_name = &names[i];
-		mount.mount_mode = 34;
+		mount.mount_mode = 4;
 		mount.blocks = 16384;
 		SaveDataMountResult result {};
+		CHECK(SaveDataMount3(&mount, &result) == SAVE_DATA_ERROR_EXISTS);
+		mount.mount_mode = 34;
 		CHECK(SaveDataMount3(&mount, &result) == OK && result.mount_status == 0);
 		std::ofstream(g_mounted_directory / "USR-DATA", std::ios::app) << "more data";
 		SaveDataMountInfo info {};
@@ -628,6 +710,47 @@ void TestClassicSaveParams() {
 	CHECK(params[0].mtime == nested_mtime);
 }
 
+void TestSearchSortKeys() {
+	Reset("SORTED");
+	const std::array names {DirName("alpha"), DirName("bravo"), DirName("charlie")};
+	constexpr std::array<uint64_t, 3> blocks {96, 48, 48};
+	constexpr std::array<uint32_t, 3> user_params {2, 3, 1};
+	constexpr std::array<int, 3>      hours_ahead {1, 3, 2};
+	for (size_t i = 0; i < names.size(); i++) {
+		struct SaveDataMount3 mount {};
+		mount.user_id    = 1;
+		mount.dir_name   = &names[i];
+		mount.mount_mode = 4;
+		mount.blocks     = blocks[i];
+		SaveDataMountResult result {};
+		CHECK(SaveDataMount3(&mount, &result) == OK);
+		CHECK(SaveDataSetParam(&result.mount_point, 4, &user_params[i], sizeof(user_params[i])) ==
+		      OK);
+		CHECK(SaveDataUmount2(0, &result.mount_point) == OK);
+		fs::last_write_time(fs::path("_SaveData/SORTED") / names[i].data / "sce_sys/param.bin",
+		                    fs::file_time_type::clock::now() + std::chrono::hours(hours_ahead[i]));
+	}
+	const auto search = [](SaveDataSortKey key, SaveDataSortOrder order) {
+		std::array<SceSaveDataDirName, 3> found {};
+		SaveDataDirNameSearchCond         cond {};
+		cond.user_id = 1;
+		cond.key     = key;
+		cond.order   = order;
+		SaveDataDirNameSearchResult result {};
+		result.dir_names     = found.data();
+		result.dir_names_num = found.size();
+		CHECK(SaveDataDirNameSearch(&cond, &result) == OK && result.set_num == 3);
+		return std::string(found[0].data) + " " + found[1].data + " " + found[2].data;
+	};
+	CHECK(search(SaveDataSortKey::DirName, SaveDataSortOrder::Descent) == "charlie bravo alpha");
+	CHECK(search(SaveDataSortKey::UserParam, SaveDataSortOrder::Ascent) == "charlie alpha bravo");
+	CHECK(search(SaveDataSortKey::Blocks, SaveDataSortOrder::Ascent) == "bravo charlie alpha");
+	CHECK(search(SaveDataSortKey::FreeBlocks, SaveDataSortOrder::Descent) == "alpha charlie bravo");
+	CHECK(search(SaveDataSortKey::Mtime, SaveDataSortOrder::Descent) == "bravo charlie alpha");
+	CHECK(fs::remove("_SaveData/SORTED/alpha/sce_sys/blocks.bin"));
+	CHECK(search(SaveDataSortKey::Blocks, SaveDataSortOrder::Ascent) == "alpha bravo charlie");
+}
+
 void RunChild(const fs::path& executable, const char* mode) {
 #ifdef _WIN32
 	CHECK(_spawnl(_P_WAIT, executable.string().c_str(), executable.string().c_str(), mode,
@@ -670,9 +793,12 @@ int main(int argc, char** argv) {
 	TestIsolationAndSync();
 	TestFailedWritePreservesSave();
 	TestClassicSavePaths();
+	TestBusyMountPreservesResult();
+	TestConvert();
 	TestGuestSaveIsolation();
 	TestSaveAllocations();
 	TestClassicSaveParams();
+	TestSearchSortKeys();
 	CHECK(SaveDataTerminate() == OK);
 	fs::current_path(previous);
 	fs::remove_all(temp);

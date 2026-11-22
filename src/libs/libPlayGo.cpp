@@ -13,7 +13,7 @@
 
 namespace Libs {
 
-LIB_VERSION("PlayGo", 1, "PlayGo", 1, 0);
+LIB_NAME("PlayGo", "PlayGo");
 
 namespace PlayGo {
 
@@ -64,7 +64,7 @@ static bool ensure_chunks_loaded() {
 }
 
 static bool is_valid_chunk(uint16_t chunk_id) {
-	return ensure_chunks_loaded() && chunk_id < g_chunks_num;
+	return chunk_id < g_chunks_num;
 }
 
 static bool is_valid_locus(int8_t locus) {
@@ -124,9 +124,6 @@ int KYTY_SYSV_ABI PlayGoOpen(int* out_handle, const void* param) {
 	if (param != nullptr) {
 		return PLAYGO_ERROR_INVALID_ARGUMENT;
 	}
-	if (!ensure_chunks_loaded()) {
-		return PLAYGO_ERROR_NOT_SUPPORT_PLAYGO;
-	}
 
 	*out_handle = PLAYGO_HANDLE;
 
@@ -158,7 +155,6 @@ int KYTY_SYSV_ABI PlayGoGetLocus(int handle, const uint16_t* chunk_ids, uint32_t
 	if (number_of_entries == 0) {
 		return PLAYGO_ERROR_BAD_SIZE;
 	}
-	ensure_chunks_loaded();
 
 	for (uint32_t i = 0; i < number_of_entries; i++) {
 		LOGF("\t chunk_ids[%u] = %" PRIu16 "\n", i, chunk_ids[i]);
@@ -227,7 +223,6 @@ int KYTY_SYSV_ABI PlayGoGetChunkId(int handle, uint16_t* out_chunk_id_list,
 	if (out_chunk_id_list != nullptr && number_of_entries == 0) {
 		return PLAYGO_ERROR_BAD_SIZE;
 	}
-	ensure_chunks_loaded();
 
 	// A null output buffer asks for the total chunk count.
 	if (out_chunk_id_list == nullptr) {

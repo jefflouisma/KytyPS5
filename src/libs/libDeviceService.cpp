@@ -6,7 +6,7 @@
 
 namespace Libs {
 
-LIB_VERSION("DeviceService", 1, "Mbus", 1, 1);
+LIB_NAME("DeviceService", "Mbus");
 
 namespace DeviceService {
 
@@ -14,6 +14,14 @@ static int KYTY_SYSV_ABI DeviceServiceInitialize() {
 	PRINT_NAME();
 
 	return OK;
+}
+
+static int KYTY_SYSV_ABI DeviceServiceGetEventState(int32_t device_class) {
+	PRINT_NAME();
+
+	LOGF("\t device_class = %" PRId32 "\n", device_class);
+
+	return 0;
 }
 
 static int KYTY_SYSV_ABI DeviceServiceQueryDeviceInfo(uint32_t device_handle, void* out_info) {
@@ -30,6 +38,7 @@ static int KYTY_SYSV_ABI DeviceServiceQueryDeviceInfo(uint32_t device_handle, vo
 
 LIB_DEFINE(InitDeviceService_1) {
 	LIB_FUNC("84fDxStrG44", DeviceService::DeviceServiceInitialize);
+	LIB_FUNC("9ddRUOV8Q5A", DeviceService::DeviceServiceGetEventState);
 	LIB_FUNC("UNMEa+5lrUA", DeviceService::DeviceServiceQueryDeviceInfo);
 }
 

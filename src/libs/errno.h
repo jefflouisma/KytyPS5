@@ -378,6 +378,7 @@ constexpr int SYSTEM_SERVICE_ERROR_INVALID_URI_LEN                 = -2136932345
 constexpr int SYSTEM_SERVICE_ERROR_INVALID_URI_SCHEME              = -2136932344; /* 0x80A10008 */
 constexpr int SYSTEM_SERVICE_ERROR_NO_APP_INFO                     = -2136932343; /* 0x80A10009 */
 constexpr int SYSTEM_SERVICE_ERROR_NOT_FLAG_IN_PARAM_SFO           = -2136932342; /* 0x80A1000A */
+constexpr int SYSTEM_SERVICE_ERROR_REMOTEPLAY_PARAMETER            = -2132606973; /* 0x80E30003 */
 
 } // namespace SystemService
 
@@ -658,6 +659,8 @@ constexpr int SAVE_DATA_ERROR_BUSY_FOR_SAVING                      = -2137063402
 constexpr int SAVE_DATA_ERROR_LIMITATION_OVER                      = -2137063401; /* 0x809F0017 */
 constexpr int SAVE_DATA_ERROR_EVENT_BUSY                           = -2137063400; /* 0x809F0018 */
 constexpr int SAVE_DATA_ERROR_PARAMSFO_TRANSFER_TITLE_ID_NOT_FOUND = -2137063399; /* 0x809F0019 */
+constexpr int SAVE_DATA_ERROR_NO_NEED_CONVERT                      = -2137063394; /* 0x809F001E */
+constexpr int SAVE_DATA_ERROR_BLOCKS_FEWER_THAN_SRC                = -2137063392; /* 0x809F0020 */
 
 } // namespace SaveData
 

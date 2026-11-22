@@ -26,12 +26,13 @@ namespace AprShared {
 void InvalidateFailedResolves();
 }
 
-LIB_VERSION("AppContent", 1, "AppContentUtil", 1, 1);
+LIB_NAME("AppContent", "AppContentUtil");
 
 namespace AppContent {
 
 constexpr uint32_t APP_CONTENT_APPPARAM_SKU_FLAG_FULL = 3;
 constexpr int      APP_CONTENT_ERROR_PARAMETER        = -2133262334; /* 0x80D90002 */
+constexpr int      APP_CONTENT_ERROR_BUSY             = -2133262333; /* 0x80D90003 */
 constexpr int      APP_CONTENT_ERROR_NOT_MOUNTED      = -2133262332; /* 0x80D90004 */
 constexpr int      APP_CONTENT_ERROR_NOT_FOUND        = -2133262331; /* 0x80D90005 */
 constexpr int      APP_CONTENT_ERROR_MOUNT_FULL       = -2133262330; /* 0x80D90006 */
@@ -117,7 +118,7 @@ int KYTY_SYSV_ABI AppContentInitialize(const AppContentInitParam* init_param,
 		LOGF("\t TITLE_ID missing\n");
 	}
 
-	SystemService::NotifyEntitlementUpdate();
+	SystemService::NotifyEvent(SystemService::SYSTEM_SERVICE_EVENT_ENTITLEMENT_UPDATE);
 	return OK;
 }
 
@@ -210,10 +211,8 @@ int KYTY_SYSV_ABI AppContentAddcontMount(uint32_t                         servic
 
 	for (const auto& m: g_addcont_mounts) {
 		if (m.label == entry->entitlement_label) {
-			const auto guest_point = m.point.substr(0, m.point.size() - 1);
-			std::strncpy(mount_point->data, guest_point.c_str(), sizeof(mount_point->data) - 1);
-			LOGF("\t already mounted %s\n", guest_point.c_str());
-			return OK;
+			LOGF("\t already mounted %s\n", m.point.c_str());
+			return APP_CONTENT_ERROR_BUSY;
 		}
 	}
 
@@ -234,7 +233,7 @@ int KYTY_SYSV_ABI AppContentAddcontMount(uint32_t                         servic
 	}
 
 	AddcontMount mount {entry->entitlement_label, "/addcont" + std::to_string(index) + "/"};
-	LibKernel::FileSystem::Mount(entry->mount_dir, mount.point);
+	LibKernel::FileSystem::Mount(entry->mount_dir, mount.point, true);
 	LOGF("\t mounted %s -> %s\n", mount.point.c_str(),
 	     Common::PathToString(entry->mount_dir).c_str());
 
