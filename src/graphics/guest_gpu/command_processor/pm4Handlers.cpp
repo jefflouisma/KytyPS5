@@ -1195,7 +1195,7 @@ KYTY_CP_OP_PARSER(CpOpPushMarker) {
 KYTY_CP_OP_PARSER(CpOpReleaseMem) {
 	KYTY_PROFILER_FUNCTION();
 
-	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0061060);
+	EXIT_NOT_IMPLEMENTED(cmd_id != 0xc0064900);
 
 	// The event type, cache actions and destination cache only order GPU work, which the renderer's
 	// resource barriers already order. A GL2 writeback (GCR_CNTL bit 9) also makes shader writes
