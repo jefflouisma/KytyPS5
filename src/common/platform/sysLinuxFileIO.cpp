@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cstring>
 #include <dirent.h>
 #include <filesystem>
 #include <sys/stat.h>
