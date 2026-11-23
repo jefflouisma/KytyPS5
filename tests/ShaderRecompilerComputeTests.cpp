@@ -4687,7 +4687,7 @@ public:
                 held_early_count == 0 && held_label_early == 0 &&
                 read_clock(held_label) == held_label_value && held_wait == 0 &&
                 interrupt_count == 1 && interrupt_event.ident == 0 &&
-                interrupt_event.data == 0x99u &&
+                interrupt_event.data == (0x99u << 16u) &&
                 held_value + clock_tolerance >= held_before &&
                 held_value <= Sync::ReadReferenceClock() + clock_tolerance,
             "an interrupt or a label landed before the GPU clock value written before it");
