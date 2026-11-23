@@ -1,6 +1,7 @@
 #include "graphics/shader/recompiler/backend/spirv/spirvEmitterInstructions.h"
 
 #include <algorithm>
+#include <bit>
 #include <optional>
 
 namespace Libs::Graphics::ShaderRecompiler::Spirv::Emitter {
@@ -51,6 +52,16 @@ std::optional<uint32_t> RecordOffset(const IR::Value& value, uint32_t stride,
 			const auto left = operand(0);
 			if (!left) return std::nullopt;
 			return static_cast<uint32_t>((uint64_t {*left} << shift.U32()) % stride);
+		}
+		case IR::ValueOpcode::BitwiseAnd32: {
+			// A packed control-point field can be left in place by masking off the
+			// within-record bits. For a power-of-two stride those bits are the residue.
+			if (!std::has_single_bit(stride)) return std::nullopt;
+			for (size_t i = 0; i < 2; ++i) {
+				const auto mask = inst->Arg(i).Resolve();
+				if (mask.IsImmediate() && (mask.U32() & (stride - 1u)) == 0u) return 0u;
+			}
+			return std::nullopt;
 		}
 		case IR::ValueOpcode::SelectU32:
 			// Lanes that pass the predicate see the selected operand.
