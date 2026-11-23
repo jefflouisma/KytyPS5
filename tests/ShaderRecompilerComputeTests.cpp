@@ -53065,8 +53065,8 @@ void CheckShaderCacheSwappcRecord(VulkanHarness& vulkan) {
   const std::array<u32, 1> leaf{EncodeSop1(0x20, 0, 14)};
   LibKernel::Memory::WriteBacking(base, leaf.data(), sizeof(leaf));
   CachedComputeShader shader;
-  shader.code.insert(shader.code.begin(), {EncodeSMovB32(12, 255), static_cast<u32>(base),
-      EncodeSMovB32(13, 255), static_cast<u32>(base >> 32u), EncodeSop1(0x21, 14, 12)});
+  shader.code.insert(shader.code.begin(), {EncodeSMovB32(14, 255), static_cast<u32>(base),
+      EncodeSMovB32(15, 255), static_cast<u32>(base >> 32u), EncodeSop1(0x21, 14, 14)});
   shader.regs.cs_regs.data_addr = reinterpret_cast<uint64_t>(shader.code.data());
   shader.Map();
   const auto directory = CacheTestDirectory(name), path = directory / "linked.shaders";
