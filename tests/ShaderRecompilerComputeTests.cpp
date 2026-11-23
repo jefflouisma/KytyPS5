@@ -16626,17 +16626,21 @@ public:
           auto video = color.desc;
           video.type = BindingType::VideoOut;
           paint();
+          // A programmed color slot consumes and expands its keys during the dispatch.
+          // Leave the target unprogrammed so the video-out bind is the first consumer.
+          registers.SetColorBase(0, {.addr = 0});
           fill_metadata(metadata_words, true);
-          const bool cleared =
-              texture_cache.FindImage(video) == color.image_id && read_texel() == expected;
+          Require(name, "video-out materializes the clear",
+                  texture_cache.FindImage(video) == color.image_id && read_texel() == expected,
+                  "the video-out bind missed the fast clear on the cached image");
+          registers.SetColorBase(0, {.addr = base});
           std::vector<uint32_t> keys(metadata_words);
           context.GetBufferCache().ReadMemory(dcc_address, metadata_size, false);
           Require(name, "video-out clear keeps its metadata keys",
-                  cleared &&
-                      LibKernel::Memory::TryReadBacking(dcc_address, keys.data(), metadata_size) &&
+                  LibKernel::Memory::TryReadBacking(dcc_address, keys.data(), metadata_size) &&
                       std::ranges::all_of(keys,
                                           [&](uint32_t word) { return word == fill_case.fill; }),
-                  "a video-out bind skipped its clear or expanded the flip's metadata keys");
+                  "the video-out bind expanded the flip's metadata keys");
         }
         paint();
         WriteMetadata(context, dcc_address, metadata_size, UINT32_MAX);
