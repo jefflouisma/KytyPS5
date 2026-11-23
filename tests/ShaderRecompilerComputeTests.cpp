@@ -7872,7 +7872,10 @@ public:
   // The fault scan reports each set page once and leaves the pages past its records set.
   void CheckFaultBufferScan() {
     constexpr const char *name = "FaultBufferScan";
-    constexpr u32 words = 2048;
+    constexpr u32 summary_words = 128;
+    constexpr u32 span = BufferCache::FAULT_SUMMARY_SPAN;
+    constexpr u32 words = summary_words * span * 32;
+    constexpr std::array<u32, 3> params{words, summary_words, span};
     constexpr u32 records = 1024; // Record 0 holds the count.
     const vk::DescriptorSetLayoutBinding bindings[]{
         {0, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute},
@@ -7888,6 +7891,9 @@ public:
     vk::PipelineLayoutCreateInfo layout_info{};
     layout_info.setLayoutCount = 1;
     layout_info.pSetLayouts = &descriptor_layout;
+    const vk::PushConstantRange push{vk::ShaderStageFlagBits::eCompute, 0, sizeof(params)};
+    layout_info.pushConstantRangeCount = 1;
+    layout_info.pPushConstantRanges = &push;
     vk::PipelineLayout layout = nullptr;
     RequireVk(name, "layout", m_device.createPipelineLayout(&layout_info, nullptr, &layout),
               "vkCreatePipelineLayout");
@@ -7904,15 +7910,18 @@ public:
     m_device.destroyShaderModule(module, nullptr);
 
     const auto bitmap = [](const auto &pages) {
-      std::vector<u32> ret(words, 0);
+      std::vector<u32> ret(words + summary_words, 0);
       for (const auto page : pages) {
-        ret[page / 32] |= 1u << (page % 32);
+        const u32 word = page / 32;
+        const u32 group = word / span;
+        ret[word] |= 1u << (page % 32);
+        ret[words + group / 32] |= 1u << (group % 32);
       }
       return ret;
     };
     // Scans a bitmap of the pages and checks the records and the bits left.
     const auto scan = [&](const char *stage, const std::vector<u32> &pages) {
-      auto fault = CreateStorageBuffer(name, bitmap(pages), words);
+      auto fault = CreateStorageBuffer(name, bitmap(pages), words + summary_words);
       auto output = CreateStorageBuffer(name, {}, records * 2);
       const vk::DescriptorBufferInfo infos[]{{fault.buffer, 0, fault.size},
                                              {output.buffer, 0, output.size}};
@@ -7926,7 +7935,8 @@ public:
       auto cmd = BeginCommands(name, stage);
       cmd.bindPipeline(vk::PipelineBindPoint::eCompute, pipeline);
       cmd.pushDescriptorSetKHR(vk::PipelineBindPoint::eCompute, layout, 0, writes);
-      cmd.dispatch(words / 4 / 64, 1, 1);
+      cmd.pushConstants(layout, vk::ShaderStageFlagBits::eCompute, 0, sizeof(params), params.data());
+      cmd.dispatch((summary_words + 63) / 64, 1, 1);
       vk::MemoryBarrier barrier{};
       barrier.srcAccessMask = vk::AccessFlagBits::eShaderWrite;
       barrier.dstAccessMask = vk::AccessFlagBits::eHostRead;
@@ -7935,7 +7945,7 @@ public:
                           nullptr);
       EndSubmitAndFree(name, stage, cmd);
 
-      const auto left = ReadBuffer(name, fault, words);
+      const auto left = ReadBuffer(name, fault, words + summary_words);
       const auto out = ReadBuffer(name, output, records * 2);
       DestroyBuffer(&fault);
       DestroyBuffer(&output);
@@ -7951,13 +7961,14 @@ public:
               "the scan lost, repeated or kept a reported page");
     };
     // Bits in each word of a block, several in one word, and in the last word.
-    scan("sparse", {0, 63, 6 * 32 + 3, 6 * 32 + 4, 6 * 32 + 5, 1000 * 32 + 17, 2047 * 32 + 31});
+    scan("sparse", {0, 63, 6 * 32 + 3, 6 * 32 + 4, 6 * 32 + 5, 1000 * 32 + 17, words * 32 - 1});
     // 1200 pages, two per word, overflow the 1023 records; an odd record count leaves a word
     // partly reported.
     std::vector<u32> overflow;
     for (u32 i = 0; i < 600; i++) {
-      overflow.push_back((3 * i + 1) * 32 + i % 31);
-      overflow.push_back((3 * i + 1) * 32 + 31);
+      const u32 word = (i < 300 ? 0 : words / 2) + 3 * i + 1;
+      overflow.push_back(word * 32 + i % 31);
+      overflow.push_back(word * 32 + 31);
     }
     scan("overflow", overflow);
 
@@ -7997,8 +8008,20 @@ public:
     const auto scan = [&](u32 count) {
       const auto command = scheduler.Current().Handle();
       if (count != 0) {
-        command.fillBuffer(cache.GetFaultBuffer()->Handle(), BufferCache::PageIndex(base) / 8,
-                           count / 8, ~0u);
+        const auto faults = cache.GetFaultBuffer()->Handle();
+        const auto first = BufferCache::PageIndex(base);
+        command.fillBuffer(faults, first / 8, count / 8, ~0u);
+        constexpr u32 pages_per_group = 32 * BufferCache::FAULT_SUMMARY_SPAN;
+        const auto first_group = first / pages_per_group;
+        const auto last_group = (first + count - 1) / pages_per_group;
+        const auto first_summary_word = first_group / 32;
+        std::vector<u32> summary(last_group / 32 - first_summary_word + 1);
+        for (auto group = first_group; group <= last_group; ++group) {
+          summary[group / 32 - first_summary_word] |= 1u << (group % 32);
+        }
+        command.updateBuffer(faults, (BufferCache::FAULT_BITMAP_WORDS + first_summary_word) *
+                                        sizeof(u32),
+                             summary.size() * sizeof(u32), summary.data());
         vk::MemoryBarrier barrier{};
         barrier.srcAccessMask = vk::AccessFlagBits::eTransferWrite;
         barrier.dstAccessMask =
