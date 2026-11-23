@@ -59592,7 +59592,7 @@ void CheckPm4Flip() {
               blank[2] == 0xcb00001fu && blank[3] == 0xc0071000u &&
               blank[14] == 0xcb00003fu,
           "the flip or wait packets are not the native ones");
-  bool complete = false;
+  bool blank_wait_blocked = false;
   bool published = true;
   bool queued = false;
   bool copied = false;
@@ -59618,8 +59618,8 @@ void CheckPm4Flip() {
     CommandProcessor processor(renderer, 0);
     processor.BufferInit();
     Pm4Execution execution;
-    complete =
-        processor.Process(execution, commands) == Pm4ProcessResult::Complete;
+    blank_wait_blocked =
+        processor.Process(execution, commands) == Pm4ProcessResult::Blocked;
     for (const auto counter : results) {
       published &= (counter & OCCLUSION_QUERY_READY) != 0;
     }
@@ -59649,13 +59649,13 @@ void CheckPm4Flip() {
   LibKernel::KernelUseconds timeout = 2'000'000;
   int64_t flipped_arg = -1;
   Require(name, "flip",
-          complete && published &&
+          blank_wait_blocked && published &&
               EventQueue::KernelWaitEqueue(flips, &event, 1, &count,
                                            &timeout) == 0 &&
               count == 1 &&
               VideoOut::VideoOutGetEventData(&event, &flipped_arg) == 0 &&
               flipped_arg == flip_arg,
-          "the flip block did not publish the occlusion counters or flip");
+          "the flip lost its counters or event, or the wait let blank through");
 
   // A compute queue's flip clears R and releases at the end of the shader.
   constexpr int64_t compute_arg = flip_arg + 1;
@@ -59725,19 +59725,29 @@ void CheckPm4Flip() {
               shown[14] == static_cast<uint32_t>(headset_label >> 32u) &&
               shown[15] == 1u,
           "the flip packet of a shown buffer is not the native one");
-  bool shown_complete = false;
-  int shown_pending = -1;
-  gpu.SendCommandSync([&] {
-    CommandProcessor processor(renderer, 0);
-    processor.BufferInit();
-    Pm4Execution execution;
-    shown_complete =
-        processor.Process(execution, shown) == Pm4ProcessResult::Complete;
-    shown_pending = VideoOut::VideoOutIsFlipPending(headset);
-    processor.BufferFlush();
-  });
-  Require(name, "wait for a shown buffer", shown_complete && shown_pending == 0,
-          "the wait returned before its buffer's flip was presented");
+  auto shown_processor = std::make_unique<CommandProcessor>(renderer, 0);
+  Pm4Execution shown_execution;
+  const auto process_shown = [&] {
+    auto result = Pm4ProcessResult::Complete;
+    gpu.SendCommandSync([&] {
+      shown_processor->BufferInit();
+      result = shown_processor->Process(shown_execution, shown);
+      shown_processor->BufferFlush();
+    });
+    return result;
+  };
+  Require(name, "wait for a pending shown buffer",
+          process_shown() == Pm4ProcessResult::Blocked,
+          "the wait passed while the buffer's flip was pending");
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+  while (VideoOut::VideoOutIsFlipPending(headset) > 0 &&
+         std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  Require(name, "wait for a shown buffer",
+          VideoOut::VideoOutIsFlipPending(headset) == 0 &&
+              process_shown() == Pm4ProcessResult::Blocked,
+          "the flip did not present or the wait passed while the buffer was displayed");
 
   // A flipped surface can be the first layer of a cached array, as a headset
   // eye of a stereo render target is; the frame copies only that layer.
@@ -59763,8 +59773,9 @@ void CheckPm4Flip() {
   gpu.WaitForIdle();
   Require(name, "close",
           VideoOut::VideoOutClose(headset) == 0 &&
+              process_shown() == Pm4ProcessResult::Complete &&
               VideoOut::VideoOutClose(handle) == 0,
-          "video-out close failed");
+          "video-out close failed or kept the display wait blocked");
   EventQueue::KernelDeleteEqueue(flips);
   renderer.ShutdownGpu();
   VideoOut::VideoOutShutdown();

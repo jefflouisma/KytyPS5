@@ -37,7 +37,7 @@ public:
 	void PrepareFlip(uint64_t request_id, Graphics::CommandBuffer& buffer);
 	void CompleteFlip(uint64_t request_id);
 	void WaitForSubmitSlot(int handle);
-	void WaitFlipDone(const uint64_t* label);
+	[[nodiscard]] bool IsSafeForRendering(const uint64_t* label, int index);
 
 	[[nodiscard]] Impl& State() noexcept;
 
