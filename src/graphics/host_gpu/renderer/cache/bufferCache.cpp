@@ -173,22 +173,25 @@ bool BufferCache::DownloadBufferMemory(Buffer& buffer, uint64_t vaddr, uint64_t 
 		return false;
 	}
 	const bool detached = !async && CanDownloadDetached(buffer_address, copies);
-	// Page-sized reads (faults, scalar loads) tend to walk on to the next pages: publish the
-	// finished dirty pages around them too. A neighbour qualifies only when no unsubmitted or
-	// unrecorded write can still change it, so it reads back what a later read of its own would.
+	// Choose the submission from the requested pages alone. Detached reads can also publish
+	// nearby finished pages. If these pages already force a submission, batch the other pages
+	// in the buffer's aligned download window, including writes that submission will finish.
 	std::vector<std::pair<uint64_t, uint64_t>> neighbours;
-	if (!async && size <= TRACKER_PAGE_SIZE) {
+	if (!async && (!detached || size <= TRACKER_PAGE_SIZE)) {
 		const auto request_begin = Common::AlignDown(vaddr, TRACKER_PAGE_SIZE);
 		const auto request_end   = Common::AlignUp(vaddr + size, TRACKER_PAGE_SIZE);
-		const auto window_begin  = std::max(
-		    buffer_address, request_begin - std::min(request_begin, DownloadNeighbourhood));
-		const auto window_end =
-		    std::min(buffer_address + buffer.Size(), request_end + DownloadNeighbourhood);
+		const auto window_begin = std::max(buffer_address, detached
+		    ? request_begin - std::min(request_begin, DownloadNeighbourhood)
+		    : Common::AlignDown(vaddr, DownloadWindowSize));
+		const auto window_end = std::min(buffer_address + buffer.Size(), detached
+		    ? request_end + DownloadNeighbourhood
+		    : std::max(window_begin + DownloadWindowSize, request_end));
 		const auto take = [&](uint64_t address, uint64_t bytes) noexcept {
 			for (auto page = address; page < address + bytes; page += TRACKER_PAGE_SIZE) {
 				if ((page >= request_begin && page < request_end) ||
 				    !m_gpu_modified_ranges.Intersects(page, TRACKER_PAGE_SIZE) ||
-				    HasUnsubmittedWrite(page, TRACKER_PAGE_SIZE)) {
+				    (detached ? HasUnsubmittedWrite(page, TRACKER_PAGE_SIZE)
+				              : HasPendingWrite(page, TRACKER_PAGE_SIZE))) {
 					continue;
 				}
 				gather(page, TRACKER_PAGE_SIZE);
@@ -383,14 +386,8 @@ void BufferCache::ReadMemory(uint64_t vaddr, uint64_t size, bool is_write) {
 			return;
 		}
 		auto& buffer = m_slot_buffers[FindBuffer(vaddr, size)];
-		if (IsRegionGpuModified(vaddr, size)) {
-			const auto start =
-			    std::max(Common::AlignDown(vaddr, DownloadWindowSize), buffer.CpuAddress());
-			const auto end = std::min(std::max(start + DownloadWindowSize, vaddr + size),
-			                          buffer.CpuAddress() + buffer.Size());
-			if (DownloadBufferMemory<false>(buffer, start, end - start)) {
-				m_memory_tracker.UnmarkRegionAsGpuModified(start, end - start);
-			}
+		if (DownloadBufferMemory<false>(buffer, vaddr, size)) {
+			m_memory_tracker.UnmarkRegionAsGpuModified(vaddr, size);
 		}
 		if (is_write) {
 			m_memory_tracker.MarkRegionAsCpuModified(vaddr, size);
