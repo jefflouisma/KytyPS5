@@ -3941,7 +3941,7 @@ public:
               cache_and_counter_did_not_submit &&
               cb_db_release_did_not_submit &&
               interrupt_result == Pm4ProcessResult::Complete &&
-              gpu_scheduler.CurrentTick() == interrupt_tick + 1 &&
+              gpu_scheduler.CurrentTick() == interrupt_tick &&
               interrupt_only_gds_label == UINT64_MAX;
         });
         parser_complete.release();
@@ -3980,9 +3980,8 @@ public:
               "CPU-only unmap submitted or waited for unrelated native work");
       Require("GpuCommandLane", "nonblocking GPU packets",
               parser_did_not_wait_gpu && parser_kept_nonblocking_boundaries,
-              "a cache event, GL2 writeback, DE counter, or interrupt boundary "
-              "used the wrong "
-              "submission behavior");
+              "a cache event, GL2 writeback, DE counter, or interrupt forced "
+              "a submission before the slice flush");
 
       alignas(uint64_t) uint64_t release_label = 0;
       alignas(uint64_t) uint64_t gds_label = UINT64_MAX;
@@ -4020,10 +4019,9 @@ public:
               processor->Process(immediate_execution, immediate);
           Require("GpuCommandLane", "32-bit release boundary",
                   immediate_result == Pm4ProcessResult::Complete &&
-                      gpu_scheduler.CurrentTick() ==
-                          immediate_tick + (interrupt == 1 || interrupt == 2) &&
+                      gpu_scheduler.CurrentTick() == immediate_tick &&
                       release_label == (interrupt == 1 ? 0 : 0x11223344u),
-                  "label-only release submitted work or interrupt release lost its boundary");
+                  "a release submitted before the slice flush or lost its label");
         }
 
         auto gds = make_release_mem(5, 0, &gds_label, 1ull << 16u);
@@ -4038,8 +4036,8 @@ public:
         const auto interrupt_tick = gpu_scheduler.CurrentTick();
         const auto interrupt_result =
             processor->Process(interrupt_execution, interrupt_only);
-        const bool interrupt_split_once =
-            gpu_scheduler.CurrentTick() == interrupt_tick + 1;
+        const bool interrupt_did_not_submit =
+            gpu_scheduler.CurrentTick() == interrupt_tick;
 
         auto gds_interrupt = make_release_mem(5, 2, &gds_label, 1ull << 16u);
         Pm4Execution gds_interrupt_execution;
@@ -4052,7 +4050,7 @@ public:
         release_mem_submission_counts =
             gds_result == Pm4ProcessResult::Complete &&
             gds_waited_once && interrupt_result == Pm4ProcessResult::Complete &&
-            interrupt_split_once &&
+            interrupt_did_not_submit &&
             gds_interrupt_result == Pm4ProcessResult::Complete &&
             gds_interrupt_waited_once;
 
