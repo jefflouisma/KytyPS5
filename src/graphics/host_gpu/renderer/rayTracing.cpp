@@ -54,8 +54,10 @@ struct Parameters {
 	uint32_t          instance_slots;
 	uint32_t          key_count;
 	uint32_t          page_bits;
+	uint32_t          fault_bitmap_words;
+	uint32_t          fault_summary_span;
 };
-static_assert(sizeof(Parameters) == 136);
+static_assert(sizeof(Parameters) == 144);
 
 struct Push {
 	vk::DeviceAddress parameters;
@@ -583,6 +585,8 @@ vk::DeviceAddress RayTracing::Prepare(uint64_t tlas) {
 	    .instance_slots  = top.instance_slots,
 	    .key_count       = static_cast<uint32_t>(m_keys.size()),
 	    .page_bits       = BufferCache::CACHING_PAGEBITS,
+	    .fault_bitmap_words = static_cast<uint32_t>(BufferCache::FAULT_BITMAP_WORDS),
+	    .fault_summary_span = BufferCache::FAULT_SUMMARY_SPAN,
 	};
 	std::memcpy(upload.data(), &parameters, sizeof(parameters));
 	std::memcpy(mapped, upload.data(), upload.size());

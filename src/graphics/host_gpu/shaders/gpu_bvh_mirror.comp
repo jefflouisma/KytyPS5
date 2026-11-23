@@ -105,6 +105,8 @@ layout(buffer_reference, std430) readonly buffer Parameters {
 	uint        instance_slots;
 	uint        key_count;
 	uint        page_bits;
+	uint        fault_bitmap_words;
+	uint        fault_summary_span;
 };
 layout(push_constant) uniform Push {
 	Parameters params;
@@ -128,7 +130,11 @@ uint64_t Host(uint64_t address) {
 	}
 	const uint64_t entry = pages[uint(page)];
 	if (entry == 0ul) {
-		atomicOr(faults[uint(page >> 5)], 1u << uint(page & 31ul));
+		const uint word  = uint(page >> 5);
+		const uint group = word / params.fault_summary_span;
+		atomicOr(faults[word], 1u << uint(page & 31ul));
+		// The fault parser scans bitmap words only when their summary bit is set.
+		atomicOr(faults[params.fault_bitmap_words + (group >> 5)], 1u << (group & 31u));
 		g_present = false;
 		return 0ul;
 	}
