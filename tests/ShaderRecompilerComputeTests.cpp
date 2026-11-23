@@ -24238,6 +24238,48 @@ public:
         check("auto unpatched vertex offset", indirect_vs, false, records_per_kind + 4);
         check("indexed unpatched instance offset", indirect_vs, true, 6);
         check("auto unpatched instance offset", indirect_vs, false, records_per_kind + 6);
+        // Past INDEX_BUFFER_SIZE the hardware reads index 0, not the stale 1 that follows: for
+        // GPU-read records, and for the CPU path's draws from a first index.
+        if (m_index_buffer_range_supported) {
+          constexpr uint64_t range_args = args_address + 2 * records_per_kind * stride;
+          constexpr uint64_t range_indices = args_address + 0x400;
+          auto &buffers = context.GetBufferCache();
+          const auto write_gpu = [&](uint64_t address, std::span<const uint32_t> words) {
+            for (uint32_t i = 0; i < words.size(); i++) {
+              auto [buffer, offset] = buffers.ObtainBuffer(address + i * 4u, 4, true);
+              buffer->Fill(offset, 4, words[i]);
+            }
+          };
+          write_gpu(range_args, std::array<u32, 5>{3, 1, 1, 0, 0});
+          write_gpu(range_indices, std::array<u32, 4>{0, 1, 2, 1});
+          const auto range_check = [&](const char *step, const DrawIndexArgs &args) {
+            shaders.SetEsShaderBase(vertex_address);
+            TextureCacheTestAccess::ClearImage(cache, scheduler.Current(), sparse_color.image_id,
+                {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, {});
+            const bool drawn =
+                RenderExecutorTestAccess::DrawIndex(executor, scheduler.Current(), args);
+            const auto pixels = ReadCachedTexel(name, context, sparse_color.image_id,
+                                                {}, {extent, extent, 1});
+            for (size_t component = 0; component < pixels.size(); component++) {
+              Require("GpuIndirectDraw", step,
+                      drawn && pixels[component] ==
+                                   (component % 4 == 3 ? 0x3f800000u : 0x3e800000u),
+                      "indices past INDEX_BUFFER_SIZE did not read as zero");
+            }
+          };
+          // Start index 1 of INDEX_BUFFER_SIZE 3: indices 1, 2, then 0.
+          range_check("GPU-read indices past INDEX_BUFFER_SIZE",
+                      {.index_count = 3,
+                       .index_addr = reinterpret_cast<const void *>(range_indices),
+                       .index_type_and_size = 1, .indirect = {range_args, 1, stride}});
+          range_check("CPU path indices past INDEX_BUFFER_SIZE",
+                      {.index_count = 3,
+                       .index_addr = reinterpret_cast<const void *>(range_indices + 4),
+                       .instance_count = 1, .index_type_and_size = 1,
+                       .offset_source = DrawOffsetSource::IndirectArgs, .index_limit = 2});
+          BufferCacheTestAccess::Download(buffers, range_args, 0x500);
+        }
+
         // Overlapping vertex buffers bind into one merged host range, sized by the buffer
         // that ends last; an empty buffer binds the null buffer with no bytes.
         {
@@ -24426,47 +24468,6 @@ public:
         check("index buffer size", true, 2, 1, {0, 1}, 8, false);
         LibKernel::Memory::InstallGpuResources(nullptr);
 
-        // Past INDEX_BUFFER_SIZE the hardware reads index 0, not the stale 1 that follows: for
-        // GPU-read records, and for the CPU path's draws from a first index.
-        if (m_index_buffer_range_supported) {
-          constexpr uint64_t range_args = mesh_args_address + 8 * stride;
-          constexpr uint64_t range_indices = mesh_args_address + 0x400;
-          auto &buffers = context.GetBufferCache();
-          const auto write_gpu = [&](uint64_t address, std::span<const uint32_t> words) {
-            for (uint32_t i = 0; i < words.size(); i++) {
-              auto [buffer, offset] = buffers.ObtainBuffer(address + i * 4u, 4, true);
-              buffer->Fill(offset, 4, words[i]);
-            }
-          };
-          write_gpu(range_args, std::array<u32, 5>{3, 1, 1, 0, 0});
-          write_gpu(range_indices, std::array<u32, 4>{0, 1, 2, 1});
-          const auto range_check = [&](const char *step, const DrawIndexArgs &args) {
-            shaders.SetEsShaderBase(vertex_address);
-            TextureCacheTestAccess::ClearImage(cache, scheduler.Current(), sparse_color.image_id,
-                {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1}, {});
-            const bool drawn =
-                RenderExecutorTestAccess::DrawIndex(executor, scheduler.Current(), args);
-            const auto pixels = ReadCachedTexel(name, context, sparse_color.image_id,
-                                                {}, {extent, extent, 1});
-            for (size_t component = 0; component < pixels.size(); component++) {
-              Require("GpuIndirectDraw", step,
-                      drawn && pixels[component] ==
-                                   (component % 4 == 3 ? 0x3f800000u : 0x3e800000u),
-                      "indices past INDEX_BUFFER_SIZE did not read as zero");
-            }
-          };
-          // Start index 1 of INDEX_BUFFER_SIZE 3: indices 1, 2, then 0.
-          range_check("GPU-read indices past INDEX_BUFFER_SIZE",
-                      {.index_count = 3,
-                       .index_addr = reinterpret_cast<const void *>(range_indices),
-                       .index_type_and_size = 1, .indirect = {range_args, 1, stride}});
-          range_check("CPU path indices past INDEX_BUFFER_SIZE",
-                      {.index_count = 3,
-                       .index_addr = reinterpret_cast<const void *>(range_indices + 4),
-                       .instance_count = 1, .index_type_and_size = 1,
-                       .offset_source = DrawOffsetSource::IndirectArgs, .index_limit = 2});
-          BufferCacheTestAccess::Download(buffers, range_args, 0x500);
-        }
       }
 
       // A fourth VS invocation reads beyond the descriptor instead of reconstructing the corner.
