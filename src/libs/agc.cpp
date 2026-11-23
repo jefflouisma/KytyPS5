@@ -4071,7 +4071,7 @@ uint32_t* KYTY_SYSV_ABI AgcDcbWaitUntilSafeForRendering(CommandBuffer* buf,
 	int        bus    = 0;
 	auto*      labels = VideoOut::VideoOutGetBufferLabels(static_cast<int>(video_out_handle), &bus);
 	const bool shown  = display_buffer_index >= 0;
-	if (labels == nullptr || display_buffer_index < -2 || display_buffer_index > 15) {
+	if ((shown && labels == nullptr) || display_buffer_index < -2 || display_buffer_index > 15) {
 		return nullptr;
 	}
 	auto* cmd = buf->AllocateDW(Pm4::WAIT_FLIP_DONE_PACKET_DW);
@@ -4095,12 +4095,6 @@ uint32_t* KYTY_SYSV_ABI AgcDcbWaitUntilSafeForRendering(CommandBuffer* buf,
 		cmd[11] = 0x40u;
 	} else {
 		cmd[3] = KYTY_PM4(9, Pm4::IT_NOP, 0u);
-		// Blank and black have no buffer label. Identify the port in the ignored NOP
-		// payload so the emulator can still wait for the flip queue on that port.
-		const auto port = reinterpret_cast<uint64_t>(labels);
-		cmd[4] = Pm4::USERDATA_TAG_WAIT_FLIP_DONE;
-		cmd[5] = static_cast<uint32_t>(port);
-		cmd[6] = static_cast<uint32_t>(port >> 32u);
 	}
 	write_agc_internal_data_packet(cmd + 12, Pm4::USERDATA_TAG_WAIT_FLIP_DONE | 0x20u | index);
 	cmd[15] = KYTY_PM4(Pm4::WAIT_FLIP_DONE_PACKET_DW - 15u, Pm4::IT_NOP, 0u);

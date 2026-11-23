@@ -823,8 +823,6 @@ if(BUILD_TESTING)
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --stream-buffer-only)
 	add_test(NAME gpu_command_lane
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --gpu-command-lane-only)
-	add_test(NAME wait_until_safe_for_rendering
-		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --wait-until-safe-for-rendering-only)
 	add_test(NAME pm4_flip
 		COMMAND $<TARGET_FILE:shader_recompiler_compute_tests> --flip-only)
 	add_test(NAME video_out_flip_rate

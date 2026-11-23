@@ -935,11 +935,10 @@ void CommandProcessor::DrawIndexAuto(DrawAutoArgs args) {
 	m_renderer.GetRenderExecutor().DrawAuto(CurrentBuffer(), args);
 }
 
-void CommandProcessor::WaitFlipDone(const uint64_t* label, int index) {
-	// Keep the lane free to prepare flips and execute other queues while this buffer is busy.
-	if (!m_renderer.GetVideoOut().IsSafeForRendering(label, index)) {
-		SuspendPm4();
-	}
+void CommandProcessor::WaitFlipDone(const uint64_t* label) {
+	BufferFlush();
+
+	m_renderer.GetVideoOut().WaitFlipDone(label);
 }
 
 void CommandProcessor::ReleaseMem(uint32_t data_sel, uint32_t interrupt_selector, void* address,

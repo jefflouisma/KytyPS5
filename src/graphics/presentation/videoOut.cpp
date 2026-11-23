@@ -217,11 +217,9 @@ public:
 	void Complete(uint64_t request_id);
 	void WaitForSubmitSlot(VideoOutConfig& cfg);
 	bool Flip();
-	[[nodiscard]] bool IsSafeForRendering(VideoOutConfig& cfg, int index);
+	void Wait(VideoOutConfig& cfg, int index);
 
 private:
-	void SignalDoneLocked();
-
 	enum class RequestState { Reserved, Ready, Presenting };
 
 	struct Request {
@@ -249,7 +247,6 @@ private:
 	std::list<Request>   m_cpu_requests;
 	std::list<Request>   m_cancelled_requests;
 	uint64_t             m_next_request_id = 1;
-	bool                 m_gpu_waiting = false;
 };
 
 struct VideoOutDriver::Impl {
@@ -736,12 +733,12 @@ VideoOutConfig* VideoOutDriver::Impl::Get(int handle) {
 }
 
 VideoOutConfig* VideoOutDriver::Impl::GetByLabel(const uint64_t* label) {
-	const auto address = reinterpret_cast<uint64_t>(label);
+	Common::LockGuard lock(m_mutex);
+
 	for (int handle = 1; handle < VIDEO_OUT_NUM_MAX; handle++) {
 		const auto& labels = m_video_out_ctx[handle].labels;
-		const auto base = reinterpret_cast<uint64_t>(labels.data());
-		if (address >= base && address - base < sizeof(labels) &&
-		    (address - base) % sizeof(uint64_t) == 0) {
+		if (IsOpenedLocked(handle) && label >= labels.data() &&
+		    label < labels.data() + labels.size()) {
 			return m_video_out_ctx + handle;
 		}
 	}
@@ -873,7 +870,7 @@ bool FlipQueue::Reserve(VideoOutConfig& cfg, int index, int64_t flip_arg, FlipRe
 				}
 			}
 		}
-		SignalDoneLocked();
+		m_done_cond_var.SignalAll();
 	}
 	if (cfg.flip_status.flipPendingNum >= VIDEO_OUT_FLIP_QUEUE_CAPACITY) {
 		Common::DebugCounters::Add(Common::DebugCounters::Counter::FlipsRejected);
@@ -950,7 +947,7 @@ void FlipQueue::Cancel(VideoOutConfig& cfg) {
 			it = queue->erase(it);
 		}
 	}
-	SignalDoneLocked();
+	m_done_cond_var.SignalAll();
 	m_submit_slot_cond_var.SignalAll();
 	m_mutex.Unlock();
 	for (auto* frame: frames) {
@@ -1073,23 +1070,17 @@ void FlipQueue::WaitForSubmitSlot(VideoOutConfig& cfg) {
 	}
 }
 
-void FlipQueue::SignalDoneLocked() {
-	m_done_cond_var.SignalAll();
-	if (m_gpu_waiting) {
-		m_gpu_waiting = false;
-		m_presenter.Renderer().NotifyGuestWrite();
-	}
-}
-
-bool FlipQueue::IsSafeForRendering(VideoOutConfig& cfg, int index) {
-	Common::LockGuard config_lock(cfg.mutex);
+void FlipQueue::Wait(VideoOutConfig& cfg, int index) {
 	Common::LockGuard lock(m_mutex);
-	const auto matches = [&cfg, index](const auto& r) { return r.cfg == &cfg && r.index == index; };
-	const bool safe = !cfg.opened || (cfg.flip_status.currentBuffer != index &&
-	                                 std::ranges::none_of(m_requests, matches) &&
-	                                 std::ranges::none_of(m_cpu_requests, matches));
-	m_gpu_waiting |= !safe;
-	return safe;
+
+	auto has_request = [this, &cfg, index] {
+		auto matches = [&cfg, index](const auto& r) { return r.cfg == &cfg && r.index == index; };
+		return std::any_of(m_requests.begin(), m_requests.end(), matches) ||
+		       std::any_of(m_cpu_requests.begin(), m_cpu_requests.end(), matches);
+	};
+	while (has_request()) {
+		m_done_cond_var.Wait(&m_mutex);
+	}
 }
 
 bool FlipQueue::Flip() {
@@ -1185,7 +1176,7 @@ bool FlipQueue::Flip() {
 		TriggerVideoOutEvents(*r.cfg, VideoOutEventKind::Flip, reinterpret_cast<void*>(r.flip_arg));
 		it = m_requests.erase(it);
 	}
-	SignalDoneLocked();
+	m_done_cond_var.SignalAll();
 	m_submit_slot_cond_var.SignalAll();
 	m_mutex.Unlock();
 	for (size_t i = count; i != 0; i--) {
@@ -1559,13 +1550,11 @@ void VideoOutDriver::WaitForSubmitSlot(int handle) {
 	m_impl->GetFlipQueue().WaitForSubmitSlot(*cfg);
 }
 
-bool VideoOutDriver::IsSafeForRendering(const uint64_t* label, int index) {
+void VideoOutDriver::WaitFlipDone(const uint64_t* label) {
 	auto* ctx = m_impl->GetByLabel(label);
-	EXIT_IF(ctx == nullptr || !IsValidBufferIndex(index));
-	if (index >= 0) {
-		index = static_cast<int>(label - ctx->labels.data());
-	}
-	return m_impl->GetFlipQueue().IsSafeForRendering(*ctx, index);
+	EXIT_IF(ctx == nullptr);
+
+	m_impl->GetFlipQueue().Wait(*ctx, static_cast<int>(label - ctx->labels.data()));
 }
 
 uint64_t* VideoOutGetBufferLabels(int handle, int* bus) {

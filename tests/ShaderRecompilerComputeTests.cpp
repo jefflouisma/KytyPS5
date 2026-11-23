@@ -59296,96 +59296,6 @@ void CheckPm4IndirectControlFlow(RenderContext &renderer) {
 
 // Device creation enables each optional extension the GPU has, and reports the features and
 // limits the GPU gives.
-void CheckWaitUntilSafeForRendering() {
-  constexpr const char *name = "WaitUntilSafeForRendering";
-  Require(name, "video", SDL_InitSubSystem(SDL_INIT_VIDEO), "SDL video init failed");
-  WindowContext window;
-  window.graphic_ctx.screen_width = 64;
-  window.graphic_ctx.screen_height = 64;
-  window.window = SDL_CreateWindow(name, 64, 64, SDL_WINDOW_VULKAN | SDL_WINDOW_HIDDEN);
-  Require(name, "window", window.window != nullptr, "hidden Vulkan window failed");
-  window.CreateVulkan();
-  auto &video_out = VideoOut::VideoOutInit(64, 64, *window.presenter);
-  auto &renderer = *window.render_context;
-  renderer.InitializeGpu(&video_out);
-  auto &gpu = renderer.GetGpu();
-
-  constexpr int user_system = 255;
-  constexpr int bus_main = 0;
-  constexpr int flip_mode_vsync = 1;
-  // Special buffer indices flip without a registered surface.
-  constexpr int index_blank = -1;
-  constexpr int index_black = -2;
-  const int handle = VideoOut::VideoOutOpen(user_system, bus_main, 0, nullptr);
-  Require(name, "open", handle > 0, "video-out open failed");
-  const auto wait_until = [](const auto &done) {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-    while (!done() && std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::sleep_for(std::chrono::milliseconds(1));
-    }
-    return done();
-  };
-  const auto address = [](const void *value) { return reinterpret_cast<uint64_t>(value); };
-
-  // Hold the graphics queue so the CPU flip of BLACK, prepared behind it, stays pending.
-  std::atomic_uint32_t gate{0};
-  std::array<uint32_t, 7> hold{};
-  hold[0] = KYTY_PM4(7, Pm4::IT_WAIT_REG_MEM, 0);
-  hold[1] = 0x10u | 3u;
-  hold[2] = static_cast<uint32_t>(address(&gate));
-  hold[3] = static_cast<uint32_t>(address(&gate) >> 32u);
-  hold[4] = 1;
-  hold[5] = UINT32_MAX;
-  gpu.Submit(hold);
-  Require(name, "flip black",
-          VideoOut::VideoOutSubmitFlip(handle, index_black, flip_mode_vsync, 0) == 0,
-          "CPU flip failed");
-
-  std::atomic_uint32_t rendered{0};
-  std::array<uint32_t, Pm4::WAIT_FLIP_DONE_PACKET_DW + 5> render{};
-  CommandBufferLayout wait_dcb{render.data(), render.data() + Pm4::WAIT_FLIP_DONE_PACKET_DW,
-      render.data(), render.data() + Pm4::WAIT_FLIP_DONE_PACKET_DW, nullptr, nullptr, 0};
-  Require(name, "native flip wait",
-          Agc::AgcDcbWaitUntilSafeForRendering(reinterpret_cast<Agc::CommandBuffer *>(&wait_dcb),
-                                             handle, index_black) == render.data(),
-          "native display wait emission failed");
-  const auto suffix = Pm4::WAIT_FLIP_DONE_PACKET_DW;
-  render[suffix] = KYTY_PM4(5, Pm4::IT_WRITE_DATA, 0);
-  render[suffix + 2] = static_cast<uint32_t>(address(&rendered));
-  render[suffix + 3] = static_cast<uint32_t>(address(&rendered) >> 32u);
-  render[suffix + 4] = 1;
-  gpu.SubmitCompute(0x20, render);
-
-  std::binary_semaphore lane{0};
-  std::jthread command_lane([&] {
-    gpu.SendCommandSync([] {});
-    lane.release();
-  });
-  Require(name, "command lane", lane.try_acquire_for(std::chrono::seconds(2)),
-          "a busy display buffer blocked the GPU thread");
-  Require(name, "pending", rendered.load() == 0,
-          "rendering started while its display buffer had a pending flip");
-
-  gate.store(1);
-  Require(name, "flip shown", wait_until([handle] { return VideoOut::VideoOutIsFlipPending(handle) == 0; }),
-          "the BLACK flip was not presented");
-  std::this_thread::sleep_for(std::chrono::milliseconds(100));
-  Require(name, "displayed", rendered.load() == 0,
-          "rendering started while its display buffer was on screen");
-
-  Require(name, "flip blank",
-          VideoOut::VideoOutSubmitFlip(handle, index_blank, flip_mode_vsync, 0) == 0,
-          "CPU flip failed");
-  Require(name, "resume", wait_until([&] { return rendered.load() == 1; }),
-          "rendering did not resume once its display buffer left the screen");
-
-  gpu.WaitForIdle();
-  Require(name, "close", VideoOut::VideoOutClose(handle) == 0, "video-out close failed");
-  renderer.ShutdownGpu();
-  VideoOut::VideoOutShutdown();
-  std::printf("[host]    %-32s ok\n", name);
-}
-
 void CheckDeviceCreation() {
   constexpr const char *name = "DeviceCreation";
   Config::Load({.printf_direction = Config::LogDirection::Silent});
@@ -59619,7 +59529,7 @@ void CheckPm4Flip() {
               blank[2] == 0xcb00001fu && blank[3] == 0xc0071000u &&
               blank[14] == 0xcb00003fu,
           "the flip or wait packets are not the native ones");
-  bool blank_wait_blocked = false;
+  bool complete = false;
   bool published = true;
   bool queued = false;
   bool copied = false;
@@ -59645,8 +59555,8 @@ void CheckPm4Flip() {
     CommandProcessor processor(renderer, 0);
     processor.BufferInit();
     Pm4Execution execution;
-    blank_wait_blocked =
-        processor.Process(execution, commands) == Pm4ProcessResult::Blocked;
+    complete =
+        processor.Process(execution, commands) == Pm4ProcessResult::Complete;
     for (const auto counter : results) {
       published &= (counter & OCCLUSION_QUERY_READY) != 0;
     }
@@ -59676,13 +59586,13 @@ void CheckPm4Flip() {
   LibKernel::KernelUseconds timeout = 2'000'000;
   int64_t flipped_arg = -1;
   Require(name, "flip",
-          blank_wait_blocked && published &&
+          complete && published &&
               EventQueue::KernelWaitEqueue(flips, &event, 1, &count,
                                            &timeout) == 0 &&
               count == 1 &&
               VideoOut::VideoOutGetEventData(&event, &flipped_arg) == 0 &&
               flipped_arg == flip_arg,
-          "the flip lost its counters or event, or the wait let blank through");
+          "the flip block did not publish the occlusion counters or flip");
 
   // A compute queue's flip clears R and releases at the end of the shader.
   constexpr int64_t compute_arg = flip_arg + 1;
@@ -59752,29 +59662,19 @@ void CheckPm4Flip() {
               shown[14] == static_cast<uint32_t>(headset_label >> 32u) &&
               shown[15] == 1u,
           "the flip packet of a shown buffer is not the native one");
-  auto shown_processor = std::make_unique<CommandProcessor>(renderer, 0);
-  Pm4Execution shown_execution;
-  const auto process_shown = [&] {
-    auto result = Pm4ProcessResult::Complete;
-    gpu.SendCommandSync([&] {
-      shown_processor->BufferInit();
-      result = shown_processor->Process(shown_execution, shown);
-      shown_processor->BufferFlush();
-    });
-    return result;
-  };
-  Require(name, "wait for a pending shown buffer",
-          process_shown() == Pm4ProcessResult::Blocked,
-          "the wait passed while the buffer's flip was pending");
-  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (VideoOut::VideoOutIsFlipPending(headset) > 0 &&
-         std::chrono::steady_clock::now() < deadline) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  }
-  Require(name, "wait for a shown buffer",
-          VideoOut::VideoOutIsFlipPending(headset) == 0 &&
-              process_shown() == Pm4ProcessResult::Blocked,
-          "the flip did not present or the wait passed while the buffer was displayed");
+  bool shown_complete = false;
+  int shown_pending = -1;
+  gpu.SendCommandSync([&] {
+    CommandProcessor processor(renderer, 0);
+    processor.BufferInit();
+    Pm4Execution execution;
+    shown_complete =
+        processor.Process(execution, shown) == Pm4ProcessResult::Complete;
+    shown_pending = VideoOut::VideoOutIsFlipPending(headset);
+    processor.BufferFlush();
+  });
+  Require(name, "wait for a shown buffer", shown_complete && shown_pending == 0,
+          "the wait returned before its buffer's flip was presented");
 
   // A flipped surface can be the first layer of a cached array, as a headset
   // eye of a stereo render target is; the frame copies only that layer.
@@ -59800,9 +59700,8 @@ void CheckPm4Flip() {
   gpu.WaitForIdle();
   Require(name, "close",
           VideoOut::VideoOutClose(headset) == 0 &&
-              process_shown() == Pm4ProcessResult::Complete &&
               VideoOut::VideoOutClose(handle) == 0,
-          "video-out close failed or kept the display wait blocked");
+          "video-out close failed");
   EventQueue::KernelDeleteEqueue(flips);
   renderer.ShutdownGpu();
   VideoOut::VideoOutShutdown();
@@ -61223,10 +61122,6 @@ int main(int argc, char **argv) {
   if (argc == 2 && std::strcmp(argv[1], "--scalar-leaf-call-only") == 0) {
     VulkanHarness vulkan;
     vulkan.CheckScalarLeafCall();
-    return 0;
-  }
-  if (argc == 2 && std::strcmp(argv[1], "--wait-until-safe-for-rendering-only") == 0) {
-    CheckWaitUntilSafeForRendering();
     return 0;
   }
   if (argc == 2 && std::strcmp(argv[1], "--flip-only") == 0) {

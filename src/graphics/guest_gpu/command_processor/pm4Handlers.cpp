@@ -1290,18 +1290,13 @@ static uint32_t CpFlip(CommandProcessor& cp, uint32_t user_data_r, const uint32_
 	return Pm4::FLIP_PACKET_DW - 1u;
 }
 
-// The native sequence names a display buffer by label and uses a NOP for blank or black.
+// A wait for a displayed buffer polls its label; a blank or black buffer has a NOP instead.
 static uint32_t CpWaitFlipDone(CommandProcessor& cp, const uint32_t* block, uint32_t remaining_dw) {
 	EXIT_NOT_IMPLEMENTED(remaining_dw < Pm4::WAIT_FLIP_DONE_PACKET_DW);
 
-	const auto index = static_cast<int32_t>(block[1] << 27u) >> 27;
-	const bool wait_for_label = block[2] == KYTY_PM4(9, Pm4::IT_WAIT_REG_MEM_64, 0u);
-	const bool wait_for_special = index < 0 && block[2] == KYTY_PM4(9, Pm4::IT_NOP, 0u) &&
-	                              block[3] == Pm4::USERDATA_TAG_WAIT_FLIP_DONE;
-	if (wait_for_label || wait_for_special) {
-		const auto label = reinterpret_cast<const uint64_t*>(
-		    block[4] | (static_cast<uint64_t>(block[5]) << 32u));
-		cp.WaitFlipDone(label, index);
+	if (block[2] == KYTY_PM4(9, Pm4::IT_WAIT_REG_MEM_64, 0u)) {
+		cp.WaitFlipDone(
+		    reinterpret_cast<const uint64_t*>(block[4] | (static_cast<uint64_t>(block[5]) << 32u)));
 	}
 	return Pm4::WAIT_FLIP_DONE_PACKET_DW - 1u;
 }
